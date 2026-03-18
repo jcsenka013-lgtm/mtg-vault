@@ -1,20 +1,6 @@
 # Cloudflare Pages deployment configuration
 # This tells Cloudflare how to build the Expo web app
+
 name = "mtg-vault"
 pages_build_output_dir = "dist"
-
-[build]
-  command = "npm run export"
-  publish = "dist"
-
-[build.environment]
-  NODE_VERSION = "20"
-  # Expo public env vars must also be set in the Cloudflare Pages dashboard
-  # under Settings > Environment variables:
-  #   EXPO_PUBLIC_SUPABASE_URL
-  #   EXPO_PUBLIC_SUPABASE_ANON_KEY
-
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
+compatibility_date = "2024-03-18"
