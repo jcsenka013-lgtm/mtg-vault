@@ -1,5 +1,7 @@
 # Cloudflare Pages deployment configuration
 # This tells Cloudflare how to build the Expo web app
+name = "mtg-vault"
+pages_build_output_dir = "dist"
 
 [build]
   command = "npm run export"
