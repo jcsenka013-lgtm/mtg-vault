@@ -1,6 +1,37 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
-  }
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": [
+        "src/*"
+      ],
+      "@db/*": [
+        "src/db/*"
+      ],
+      "@api/*": [
+        "src/api/*"
+      ],
+      "@store/*": [
+        "src/store/*"
+      ],
+      "@components/*": [
+        "src/components/*"
+      ],
+      "@hooks/*": [
+        "src/hooks/*"
+      ],
+      "@mtgtypes/*": [
+        "src/types/*"
+      ]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.d.ts",
+    "expo-env.d.ts",
+    ".expo/types/**/*.ts"
+  ]
 }

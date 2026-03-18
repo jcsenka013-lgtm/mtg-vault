@@ -6,16 +6,43 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "export": "expo export --platform web",
+    "type-check": "tsc --noEmit --skipLibCheck"
   },
   "dependencies": {
+    "@expo/metro-runtime": "~55.0.6",
+    "@supabase/supabase-js": "^2.99.2",
+    "@tanstack/react-query": "^5.90.21",
+    "axios": "^1.13.6",
+    "babel-preset-expo": "^55.0.11",
+    "drizzle-orm": "^0.45.1",
     "expo": "~55.0.7",
+    "expo-camera": "^55.0.10",
+    "expo-clipboard": "^55.0.9",
+    "expo-file-system": "^55.0.11",
+    "expo-haptics": "^55.0.9",
+    "expo-router": "~55.0.6",
+    "expo-sharing": "^55.0.12",
+    "expo-sqlite": "^55.0.11",
     "expo-status-bar": "~55.0.4",
+    "nativewind": "^4.2.3",
     "react": "19.2.0",
-    "react-native": "0.83.2"
+    "react-dom": "19.2.0",
+    "react-native": "0.83.2",
+    "react-native-gesture-handler": "^2.30.0",
+    "react-native-get-random-values": "~1.11.0",
+    "react-native-reanimated": "4.2.1",
+    "react-native-web": "^0.21.0",
+    "uuid": "^13.0.0",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "@types/uuid": "^10.0.0",
+    "babel-plugin-module-resolver": "^5.0.3",
+    "drizzle-kit": "^0.31.10",
+    "tailwindcss": "^3.4.19",
     "typescript": "~5.9.2"
   },
   "private": true

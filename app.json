@@ -1,30 +1,56 @@
 {
   "expo": {
-    "name": "MTGapp",
-    "slug": "MTGapp",
+    "name": "MTG Scanner",
+    "slug": "mtg-scanner",
     "version": "1.0.0",
+    "scheme": "mtgscanner",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0a0a0f"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mtgscanner.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "MTG Scanner uses the camera to scan Magic: The Gathering cards.",
+        "NSPhotoLibraryUsageDescription": "MTG Scanner can read card images from your photo library."
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0a0a0f",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
+      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE"],
+      "package": "com.mtgscanner.app",
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/favicon.png",
+      "name": "MTG Scanner",
+      "description": "Scan and track your Magic: The Gathering card collection",
+      "backgroundColor": "#0a0a0f",
+      "themeColor": "#c89b3c"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "MTG Scanner uses the camera to scan Magic: The Gathering cards."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
     }
   }
 }
