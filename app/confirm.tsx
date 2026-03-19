@@ -6,7 +6,7 @@ import {
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { useAppStore } from "@store/appStore";
-import { normalizeScryfallCard, searchCardByName, autocompleteCardName } from "@api/scryfall";
+import { normalizeScryfallCard, searchCardByName, autocompleteCardName, getCardPrints } from "@api/scryfall";
 import { addCard } from "@db/queries";
 import * as Haptics from "expo-haptics";
 import type { ScryfallCard } from "@mtgtypes/index";
@@ -26,6 +26,7 @@ export default function ConfirmScreen() {
   const [candidates, setCandidates] = useState<ScryfallCard[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [isFoil, setIsFoil] = useState(false);
+  const [isFullArt, setIsFullArt] = useState(false);
   const [condition, setCondition] = useState<"NM" | "LP" | "MP" | "HP" | "DMG">("NM");
   const [saving, setSaving] = useState(false);
 
@@ -50,13 +51,22 @@ export default function ConfirmScreen() {
     setIsSearching(true);
     setSuggestions([]);
     try {
-      const results = await searchCardByName(query);
+      // Try to get all printings of this name specifically
+      const results = await getCardPrints(query);
       if (results.length > 0) {
         setCandidates(results);
         setSelectedIndex(0);
         setSearchQuery("");
       } else {
-        Alert.alert("No results", "Could not find any cards by that name.");
+        // Fallback to general search
+        const fallback = await searchCardByName(query);
+        if (fallback.length > 0) {
+          setCandidates(fallback);
+          setSelectedIndex(0);
+          setSearchQuery("");
+        } else {
+          Alert.alert("No results", "Could not find any cards by that name.");
+        }
       }
     } catch (e) {
       Alert.alert("Error", "Search failed.");
@@ -90,7 +100,6 @@ export default function ConfirmScreen() {
         scryfallId: normalized.scryfallId,
         name: normalized.name,
         setCode: normalized.setCode,
-        setName: normalized.setName,
         collectorNumber: normalized.collectorNumber,
         rarity: normalized.rarity,
         colors: normalized.colors,
@@ -99,6 +108,7 @@ export default function ConfirmScreen() {
         quantity: 1,
         priceUsd: normalized.priceUsd,
         priceUsdFoil: normalized.priceUsdFoil,
+        setName: normalized.setName + (isFullArt ? " (Full Art)" : ""),
         imageUri: normalized.imageUri,
         scryfallUri: normalized.scryfallUri,
       });
@@ -196,6 +206,16 @@ export default function ConfirmScreen() {
                 value={isFoil}
                 onValueChange={setIsFoil}
                 trackColor={{ false: "#222233", true: "#4a9eff" }}
+                thumbColor="#f0f0f8"
+              />
+            </View>
+
+            <View style={styles.settingRow}>
+              <Text style={styles.settingLabel}>🖼️ Full Art</Text>
+              <Switch
+                value={isFullArt}
+                onValueChange={setIsFullArt}
+                trackColor={{ false: "#222233", true: "#c89b3c" }}
                 thumbColor="#f0f0f8"
               />
             </View>

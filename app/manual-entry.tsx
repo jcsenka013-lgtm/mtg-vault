@@ -6,7 +6,7 @@ import {
 import { router } from "expo-router";
 import { useAppStore } from "@store/appStore";
 import { addCard } from "@db/queries";
-import { searchCardByName, autocompleteCardName } from "@api/scryfall";
+import { searchCardByName, autocompleteCardName, getCardPrints, getCardBySetAndNumber } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
 import * as Haptics from "expo-haptics";
 import "react-native-get-random-values";
@@ -192,6 +192,8 @@ export default function ManualEntryScreen() {
   const [looking, setLooking] = useState(false);
   const [filledFromScryfall, setFilledFromScryfall] = useState(false);
   const [scryfallCard, setScryfallCard] = useState<ScryfallCard | null>(null);
+  const [cardVersions, setCardVersions] = useState<ScryfallCard[]>([]);
+  const [lookingVersions, setLookingVersions] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const toggleColor = (c: ColorKey) =>
@@ -245,18 +247,53 @@ export default function ManualEntryScreen() {
     if (!name.trim()) return;
     setSuggestions([]);
     setLooking(true);
+    setCardVersions([]);
     try {
       const results = await searchCardByName(name.trim());
       if (results.length === 0) {
         Alert.alert("Not Found", "No card found with that name on Scryfall.");
         return;
       }
-      fillFromScryfall(results[0]);
+      
+      // If we found a base card, fetch all its versions
+      setLookingVersions(true);
+      const allPrints = await getCardPrints(results[0].name);
+      if (allPrints.length > 1) {
+        setCardVersions(allPrints);
+        // Still fill with the first/most recent one by default
+        fillFromScryfall(allPrints[0]);
+      } else {
+        fillFromScryfall(allPrints[0] || results[0]);
+      }
       await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {
       Alert.alert("Error", "Failed to look up card. Check your connection.");
     } finally {
       setLooking(false);
+      setLookingVersions(false);
+    }
+  };
+
+  // ── Specific Lookup by Set + Number ──────────────────────────────────────
+  const handleSpecificLookup = async () => {
+    if (!setCode.trim() || !collNum.trim()) {
+      Alert.alert("Missing Info", "Please enter both Set Code and Collector #");
+      return;
+    }
+    setLookingVersions(true);
+    try {
+      const card = await getCardBySetAndNumber(setCode.trim(), collNum.trim());
+      if (card) {
+        fillFromScryfall(card);
+        setCardVersions([]); // Clear versions if we specifically found one
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      } else {
+        Alert.alert("Not Found", `No card found for ${setCode.toUpperCase()} #${collNum}`);
+      }
+    } catch {
+      Alert.alert("Error", "Lookup failed. Check your data or connection.");
+    } finally {
+      setLookingVersions(false);
     }
   };
 
@@ -265,10 +302,14 @@ export default function ManualEntryScreen() {
     setSuggestions([]);
     setName(suggestion);
     setLooking(true);
+    setCardVersions([]);
     try {
-      const results = await searchCardByName(suggestion);
-      if (results.length > 0) {
-        fillFromScryfall(results[0]);
+      const allPrints = await getCardPrints(suggestion);
+      if (allPrints.length > 0) {
+        if (allPrints.length > 1) {
+          setCardVersions(allPrints);
+        }
+        fillFromScryfall(allPrints[0]);
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       }
     } catch {
@@ -386,6 +427,35 @@ export default function ManualEntryScreen() {
         )}
 
         <View style={{ height: 16 }} />
+
+        {/* ── Card Versions ── */}
+        {(cardVersions.length > 0 || lookingVersions) && (
+          <>
+            <Text style={s.label}>Select Printing / Version ({cardVersions.length})</Text>
+            {lookingVersions && cardVersions.length === 0 ? (
+              <ActivityIndicator color="#c89b3c" style={{ marginVertical: 10 }} />
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.versionScroll}>
+                {cardVersions.map((v) => {
+                  const isActive = scryfallCard?.id === v.id;
+                  return (
+                    <Pressable
+                      key={v.id}
+                      style={[s.versionCard, isActive && s.versionActive]}
+                      onPress={() => fillFromScryfall(v)}
+                    >
+                      <Text style={s.versionSet}>{v.set.toUpperCase()}</Text>
+                      <Text style={s.versionNum}>#{v.collector_number}</Text>
+                      <Text style={s.versionRarity} numberOfLines={1}>{v.rarity}</Text>
+                      {isActive && <Text style={s.versionCheck}>✅</Text>}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            )}
+            <View style={{ height: 16 }} />
+          </>
+        )}
 
         {/* ── Color Identity ── */}
         <Text style={s.label}>Color Identity</Text>
@@ -505,10 +575,18 @@ export default function ManualEntryScreen() {
           <View style={{ width: 12 }} />
           <View style={{ flex: 1 }}>
             <Text style={s.label}>Collector #</Text>
-            <TextInput
-              style={s.input} value={collNum} onChangeText={setCollNum}
-              placeholder="001" placeholderTextColor="#606078" keyboardType="numeric"
-            />
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <TextInput
+                style={[s.input, { flex: 1 }]} value={collNum} onChangeText={setCollNum}
+                placeholder="001" placeholderTextColor="#606078" keyboardType="numeric"
+              />
+              <Pressable 
+                style={[s.syncBtn, (!setCode.trim() || !collNum.trim()) && s.btnDisabled]} 
+                onPress={handleSpecificLookup}
+              >
+                <Text style={s.syncBtnText}>🔄</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
 
@@ -809,8 +887,42 @@ const s = StyleSheet.create({
   rarityDiamond: { fontSize: 14, marginBottom: 3 },
   rarityLabel: { color: "#606078", fontSize: 10, fontWeight: "600" },
 
+  // Versions
+  versionScroll: { marginBottom: 10 },
+  versionCard: {
+    width: 80,
+    height: 90,
+    backgroundColor: "#12121a",
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: "#222233",
+    padding: 8,
+    marginRight: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  versionActive: { borderColor: "#c89b3c", backgroundColor: "#1e1a0f" },
+  versionSet: { color: "#f0f0f8", fontSize: 13, fontWeight: "800" },
+  versionNum: { color: "#a0a0b8", fontSize: 11, fontWeight: "600" },
+  versionRarity: { color: "#606078", fontSize: 9, marginTop: 4, textTransform: "capitalize" },
+  versionCheck: { position: "absolute", top: -6, right: -6, fontSize: 14 },
+
   // Two-column layout
   twoCol: { flexDirection: "row" },
+
+  // Sync button
+  syncBtn: {
+    backgroundColor: "#12121a",
+    borderRadius: 14,
+    width: 50,
+    height: 50,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "#c89b3c",
+  },
+  syncBtnText: { fontSize: 18 },
 
   // P/T
   ptRow: { flexDirection: "row", alignItems: "center", marginBottom: 20 },

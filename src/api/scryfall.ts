@@ -31,29 +31,33 @@ async function rateLimitedGet<T>(url: string, params?: Record<string, string>): 
   return response.data;
 }
 
-/**
- * Fuzzy card search by name (best for OCR output).
- * Returns top candidates sorted by relevance.
- */
 export async function searchCardByName(name: string): Promise<ScryfallCard[]> {
   try {
-    // First try fuzzy exact match
-    const card = await rateLimitedGet<ScryfallCard>("/cards/named", {
-      fuzzy: name,
+    // First try fuzzy search
+    const results = await rateLimitedGet<ScryfallSearchResponse>("/cards/search", {
+      q: name,
+      order: "name",
+      unique: "cards", // Get one of each card type first
     });
-    return [card];
+    return results.data.slice(0, 5);
   } catch {
-    // Fall back to full search for multiple candidates
-    try {
-      const result = await rateLimitedGet<ScryfallSearchResponse>("/cards/search", {
-        q: name,
-        order: "name",
-        unique: "prints",
-      });
-      return result.data.slice(0, 5);
-    } catch {
-      return [];
-    }
+    return [];
+  }
+}
+
+/**
+ * Get all printings of a card by its exact name.
+ */
+export async function getCardPrints(name: string): Promise<ScryfallCard[]> {
+  try {
+    const result = await rateLimitedGet<ScryfallSearchResponse>("/cards/search", {
+      q: `!"${name}"`,
+      unique: "prints",
+      order: "released",
+    });
+    return result.data;
+  } catch {
+    return [];
   }
 }
 
