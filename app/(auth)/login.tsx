@@ -31,14 +31,14 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
 
   async function handleAuth() {
-    console.log("DEBUG: handleAuth started for", selectedUser?.email);
-    if (!selectedUser || !password) {
-      Alert.alert("Error", "Please provide the password for this account.");
-      return;
-    }
-
-    setLoading(true);
     try {
+      console.log("DEBUG: handleAuth started for", selectedUser?.email);
+      if (!selectedUser || !password) {
+        Alert.alert("Error", "Please provide the password for this account.");
+        return;
+      }
+
+      setLoading(true);
       console.log("DEBUG: Calling signInWithPassword...");
       // Always sign in, sign up is removed for security
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -61,8 +61,8 @@ export default function LoginScreen() {
       console.log("DEBUG: Login successful, navigating...");
       router.replace("/(tabs)");
     } catch (error: any) {
-      console.log("DEBUG: Login catch block error:", error.message);
-      Alert.alert("Login Failed", error.message);
+      console.error("DEBUG: Login catch block error:", error);
+      Alert.alert("Login Failed", error?.message || "An unexpected error occurred during login.");
     } finally {
       setLoading(false);
       console.log("DEBUG: handleAuth finished");
