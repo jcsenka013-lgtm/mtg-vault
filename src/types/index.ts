@@ -43,6 +43,9 @@ export interface ScryfallCard {
     cardmarket?: string;
     cardhoarder?: string;
   };
+  full_art?: boolean;
+  border_color?: string;
+  promo_types?: string[];
 }
 
 export interface ScryfallSearchResponse {

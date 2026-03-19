@@ -6,12 +6,20 @@ import {
   StyleSheet,
   Alert,
   Platform,
-  ActivityIndicator
+  ActivityIndicator,
+  Dimensions
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Haptics from "expo-haptics";
 import { useAppStore } from "@store/appStore";
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
+const CARD_RATIO = 63 / 88;
+const CARD_WIDTH = SCREEN_WIDTH * 0.75;
+const CARD_HEIGHT = CARD_WIDTH / CARD_RATIO;
+const TITLE_HEIGHT = CARD_HEIGHT * 0.15;
 import { searchCardByName } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
 import Tesseract from "tesseract.js";
@@ -41,6 +49,7 @@ function extractCardInfo(text: string): { name: string; collectorNumber?: string
 }
 
 export default function ScannerScreen() {
+  const isFocused = useIsFocused();
   const [permission, requestPermission] = useCameraPermissions();
   const [webPermissionGranted, setWebPermissionGranted] = useState(false);
   const [webChecking, setWebChecking] = useState(Platform.OS === "web");
@@ -151,11 +160,12 @@ export default function ScannerScreen() {
           const vW = video.videoWidth;
           const vH = video.videoHeight;
           
-          // Crop to middle 80% width with 320:60 aspect ratio (same as UI frame)
-          const cropW = vW * 0.8;
-          const cropH = cropW * (60 / 320);
+          const scale = Math.min(vW / SCREEN_WIDTH, vH / SCREEN_HEIGHT);
+          const cropW = CARD_WIDTH * scale;
+          const cropH = TITLE_HEIGHT * scale;
+          
           const sx = (vW - cropW) / 2;
-          const sy = (vH - cropH) / 2;
+          const sy = (vH - (CARD_HEIGHT * scale)) / 2; // Frame starts at the top of the 63x88 boundary
           
           canvas.width = cropW;
           canvas.height = cropH;
@@ -181,11 +191,13 @@ export default function ScannerScreen() {
           const photo = await cameraRef.current.takePictureAsync({ base64: true });
           if (photo?.uri) {
             console.log("Starting Native OCR analysis on Cropped Image...");
-            // Crop to center 80% width with 320:60 aspect ratio
-            const cropW = photo.width * 0.8;
-            const cropH = cropW * (60 / 320);
+            // Use screen scaling to identify the exact card cutout from the raw high-res photo
+            const cropW = photo.width * 0.75; // 75% of screen width corresponds to card frame width
+            const cardH = cropW / CARD_RATIO;
+            const cropH = cardH * 0.15; // Extract just the Title Box (top 15%)
+            
             const originX = (photo.width - cropW) / 2;
-            const originY = (photo.height - cropH) / 2;
+            const originY = (photo.height - cardH) / 2;
             
             const cropped = await ImageManipulator.manipulateAsync(
               photo.uri,
@@ -272,7 +284,7 @@ export default function ScannerScreen() {
       {isWeb && <canvas ref={canvasRef} style={{ display: 'none' }} />}
       
       {/* Camera */}
-      {scanning && (
+      {isFocused && scanning && (
         isWeb ? (
           <video
             ref={videoRef}
@@ -324,16 +336,19 @@ export default function ScannerScreen() {
           </View>
         )}
 
-        {/* Scan frame */}
-        <View style={styles.frameWrapper}>
-          <Text style={styles.frameHelper}>Webcams are fixed-focus. Hold card 8-12 inches away.</Text>
-          <View style={styles.frame}>
-            <View style={[styles.corner, styles.cornerTL]} />
-            <View style={[styles.corner, styles.cornerTR]} />
-            <View style={[styles.corner, styles.cornerBL]} />
-            <View style={[styles.corner, styles.cornerBR]} />
+        <View style={styles.overlayContainer} pointerEvents="none">
+          <View style={styles.overlayDim} />
+          <View style={styles.overlayRow}>
+             <View style={styles.overlayDim} />
+             <View style={styles.cardFrame}>
+                <View style={styles.titleFrame} />
+             </View>
+             <View style={styles.overlayDim} />
           </View>
-          <Text style={styles.frameTip}>Fit the Card Name exactly inside this box</Text>
+          <View style={[styles.overlayDim, { paddingTop: 20, alignItems: "center" }]}>
+             <Text style={styles.frameHelper}>Webcams generally have fixed focus lenses.</Text>
+             <Text style={styles.frameHelperSub}>Hold MTG card 8-12 inches away</Text>
+          </View>
         </View>
 
         {/* Bottom Bar: Manual search & Capture */}
@@ -394,15 +409,13 @@ const styles = StyleSheet.create({
   noSessionBanner: { flexDirection: "row", alignSelf: "center", alignItems: "center", gap: 8, backgroundColor: "rgba(239,68,68,0.15)", borderRadius: 16, paddingHorizontal: 16, paddingVertical: 8, borderWidth: 1, borderColor: "#ef4444", zIndex: 10 },
   noSessionText: { color: "#ef4444", fontWeight: "600" },
   noSessionLink: { color: ACCENT, fontWeight: "700" },
-  frameWrapper: { alignItems: "center", zIndex: 10 },
-  frameHelper: { color: "rgba(160,160,184,0.9)", fontSize: 13, backgroundColor: "rgba(10,10,15,0.8)", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, overflow: "hidden", marginBottom: 20, fontWeight: "700", textAlign: "center" },
-  frame: { width: 320, height: 60, position: "relative", marginBottom: 12 },
-  corner: { position: "absolute", width: 24, height: 24, borderColor: ACCENT, borderWidth: 3 },
-  cornerTL: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0 },
-  cornerTR: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
-  cornerBL: { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0 },
-  cornerBR: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0 },
-  frameTip: { color: "rgba(160,160,184,0.7)", fontSize: 13, backgroundColor: "rgba(10,10,15,0.7)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, overflow: "hidden" },
+  overlayContainer: { ...StyleSheet.absoluteFillObject, zIndex: 10 },
+  overlayDim: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)" },
+  overlayRow: { flexDirection: "row", height: CARD_HEIGHT },
+  cardFrame: { width: CARD_WIDTH, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 12 },
+  titleFrame: { height: "15%", borderBottomWidth: 1, borderColor: "rgba(255,255,255,0.5)", borderStyle: "dashed" },
+  frameHelper: { color: "#f0f0f8", fontSize: 13, fontWeight: "700", textAlign: "center", paddingHorizontal: 20 },
+  frameHelperSub: { color: ACCENT, fontSize: 13, fontWeight: "800", textAlign: "center", marginTop: 4 },
   bottomBar: { paddingHorizontal: 16, paddingBottom: 40, paddingTop: 16, backgroundColor: "rgba(10,10,15,0.8)", alignItems: "center", zIndex: 10 },
   actionRow: { flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center" },
   captureBtn: { backgroundColor: "#12121a", borderRadius: 24, paddingHorizontal: 20, paddingVertical: 14, borderWidth: 1, borderColor: "#222233" },

@@ -91,6 +91,37 @@ export default function ConfirmScreen() {
     ? (isFoil ? (normalized.priceUsdFoil ?? normalized.priceUsd) : normalized.priceUsd)
     : null;
 
+  // Sync the `isFullArt` state with the currently selected card
+  useEffect(() => {
+    if (!card) return;
+    const isSpecial = card.full_art === true || card.border_color === "borderless" || (card.promo_types?.includes("extendedart") ?? false);
+    if (isFullArt !== isSpecial) setIsFullArt(isSpecial);
+  }, [selectedIndex, card]);
+
+  const handleFullArtToggle = (val: boolean) => {
+    if (!candidates.length) {
+      setIsFullArt(val);
+      return;
+    }
+    setIsFullArt(val);
+    if (val) {
+      const idx = candidates.findIndex(
+        (c: any) => c.full_art === true || c.border_color === "borderless" || c.promo_types?.includes("extendedart")
+      );
+      if (idx !== -1) {
+        setSelectedIndex(idx);
+      } else {
+        Alert.alert("Not Found", "No full art or borderless printing was found in the search results.");
+        setIsFullArt(false);
+      }
+    } else {
+      const idx = candidates.findIndex(
+        (c: any) => !(c.full_art === true || c.border_color === "borderless" || c.promo_types?.includes("extendedart"))
+      );
+      if (idx !== -1) setSelectedIndex(idx);
+    }
+  };
+
   const handleConfirm = async () => {
     if (!card || !normalized || !sessionId) return;
     setSaving(true);
@@ -211,10 +242,10 @@ export default function ConfirmScreen() {
             </View>
 
             <View style={styles.settingRow}>
-              <Text style={styles.settingLabel}>🖼️ Full Art</Text>
+              <Text style={styles.settingLabel}>🖼️ Full Art / Borderless</Text>
               <Switch
                 value={isFullArt}
-                onValueChange={setIsFullArt}
+                onValueChange={handleFullArtToggle}
                 trackColor={{ false: "#222233", true: "#c89b3c" }}
                 thumbColor="#f0f0f8"
               />
