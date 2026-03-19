@@ -15,6 +15,7 @@ import { useAppStore } from "@store/appStore";
 import { searchCardByName } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
 import Tesseract from "tesseract.js";
+import * as ImageManipulator from "expo-image-manipulator";
 
 // Regex patterns for OCR text extraction
 const COLLECTOR_PATTERN = /(\d{1,4})\s*\/\s*(\d{1,4})/;
@@ -27,17 +28,15 @@ function extractCardInfo(text: string): { name: string; collectorNumber?: string
   // Clean lines: Remove weird symbols that OCR often hallucinates at the edges
   const cleanedLines = lines.map(l => l.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, ''));
 
-  // Find the first line that looks like a valid card name (at least 3 chars, contains letters, not just numbers)
+  // Since the image is heavily cropped to the Name Box, look for any substantial line.
   const nameLine = cleanedLines.find(
-    (l) => l.length >= 3 && l.length <= 50 && /[a-zA-Z]/.test(l) && !/^\d+$/.test(l)
+    (l) => l.length >= 2 && /[a-zA-Z]/.test(l) && !/^\d+$/.test(l)
   );
-
-  const collectorMatch = text.match(COLLECTOR_PATTERN);
 
   if (!nameLine) return null;
   return {
     name: nameLine,
-    collectorNumber: collectorMatch ? collectorMatch[1] : undefined,
+    collectorNumber: undefined, // Ignored entirely to optimize for high-accuracy Name matching
   };
 }
 
@@ -70,6 +69,8 @@ export default function ScannerScreen() {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
           facingMode: "environment",
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
           advanced: [{ focusMode: "continuous" } as any]
         } 
       });
@@ -146,13 +147,23 @@ export default function ScannerScreen() {
         if (videoRef.current && canvasRef.current) {
           const video = videoRef.current;
           const canvas = canvasRef.current;
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          const ctx = canvas.getContext("2d");
-          ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
-          const base64Data = canvas.toDataURL("image/jpeg", 0.8);
           
-          console.log("Starting Web OCR analysis...");
+          const vW = video.videoWidth;
+          const vH = video.videoHeight;
+          
+          // Crop to middle 80% width with 320:60 aspect ratio (same as UI frame)
+          const cropW = vW * 0.8;
+          const cropH = cropW * (60 / 320);
+          const sx = (vW - cropW) / 2;
+          const sy = (vH - cropH) / 2;
+          
+          canvas.width = cropW;
+          canvas.height = cropH;
+          const ctx = canvas.getContext("2d");
+          ctx?.drawImage(video, sx, sy, cropW, cropH, 0, 0, cropW, cropH);
+          const base64Data = canvas.toDataURL("image/jpeg", 0.9);
+          
+          console.log("Starting Web OCR analysis on Cropped Image...");
           const worker = await Tesseract.createWorker("eng");
           const { data: { text } } = await worker.recognize(base64Data);
           await worker.terminate();
@@ -168,11 +179,23 @@ export default function ScannerScreen() {
         if (cameraRef.current) {
           await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           const photo = await cameraRef.current.takePictureAsync({ base64: true });
-          if (photo?.base64) {
-            console.log("Starting Native OCR analysis...");
+          if (photo?.uri) {
+            console.log("Starting Native OCR analysis on Cropped Image...");
+            // Crop to center 80% width with 320:60 aspect ratio
+            const cropW = photo.width * 0.8;
+            const cropH = cropW * (60 / 320);
+            const originX = (photo.width - cropW) / 2;
+            const originY = (photo.height - cropH) / 2;
+            
+            const cropped = await ImageManipulator.manipulateAsync(
+              photo.uri,
+              [{ crop: { originX, originY, width: cropW, height: cropH } }],
+              { base64: true, format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
+            );
+
             const worker = await Tesseract.createWorker("eng");
             // Native uses data URI format for base64 images
-            const { data: { text } } = await worker.recognize(`data:image/jpeg;base64,${photo.base64}`);
+            const { data: { text } } = await worker.recognize(`data:image/jpeg;base64,${cropped.base64}`);
             await worker.terminate();
             
             console.log("OCR Text Extracted:\n", text);
@@ -303,13 +326,14 @@ export default function ScannerScreen() {
 
         {/* Scan frame */}
         <View style={styles.frameWrapper}>
+          <Text style={styles.frameHelper}>Webcams are fixed-focus. Hold card 8-12 inches away.</Text>
           <View style={styles.frame}>
             <View style={[styles.corner, styles.cornerTL]} />
             <View style={[styles.corner, styles.cornerTR]} />
             <View style={[styles.corner, styles.cornerBL]} />
             <View style={[styles.corner, styles.cornerBR]} />
           </View>
-          <Text style={styles.frameTip}>Point at the card name</Text>
+          <Text style={styles.frameTip}>Fit the Card Name exactly inside this box</Text>
         </View>
 
         {/* Bottom Bar: Manual search & Capture */}
@@ -371,7 +395,8 @@ const styles = StyleSheet.create({
   noSessionText: { color: "#ef4444", fontWeight: "600" },
   noSessionLink: { color: ACCENT, fontWeight: "700" },
   frameWrapper: { alignItems: "center", zIndex: 10 },
-  frame: { width: 280, height: 180, position: "relative", marginBottom: 12 },
+  frameHelper: { color: "rgba(160,160,184,0.9)", fontSize: 13, backgroundColor: "rgba(10,10,15,0.8)", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, overflow: "hidden", marginBottom: 20, fontWeight: "700", textAlign: "center" },
+  frame: { width: 320, height: 60, position: "relative", marginBottom: 12 },
   corner: { position: "absolute", width: 24, height: 24, borderColor: ACCENT, borderWidth: 3 },
   cornerTL: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0 },
   cornerTR: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
