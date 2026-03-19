@@ -8,9 +8,18 @@ import { useAppStore } from "@store/appStore";
 import { useAuthStore } from "@store/authStore";
 import { getAllSessions, calculateSessionROI, updateSessionCost } from "@db/queries";
 import type { DbSession } from "@/lib/supabase";
+import { supabase } from "@/lib/supabase";
 import type { SessionROI } from "@mtgtypes/index";
+import { themes, ManaTheme } from "@/theme";
 
-const MANA = ["☀️", "💧", "💀", "🔥", "🌿"];
+const MANA: { emoji: string; theme: ManaTheme }[] = [
+  { emoji: "☀️", theme: "W" },
+  { emoji: "💧", theme: "U" },
+  { emoji: "💀", theme: "B" },
+  { emoji: "🔥", theme: "R" },
+  { emoji: "🌿", theme: "G" },
+  { emoji: "◇",  theme: "C" },
+];
 
 const RARITY_COLORS: Record<string, string> = {
   mythic: "#e87a3c",
@@ -20,8 +29,9 @@ const RARITY_COLORS: Record<string, string> = {
 };
 
 export default function DashboardScreen() {
-  const { activeSession, setActiveSession, updateSessionCost: updateStoreCost } = useAppStore();
+  const { activeSession, setActiveSession, updateSessionCost: updateStoreCost, activeTheme, setTheme } = useAppStore();
   const { signOut } = useAuthStore();
+  const t = themes[activeTheme];
   const [sessions, setSessions] = useState<DbSession[]>([]);
   // ... rest of state
   const [roi, setRoi] = useState<SessionROI | null>(null);
@@ -63,16 +73,29 @@ export default function DashboardScreen() {
   const foilCount = roi ? roi.topCards.filter((c) => c.isFoil).length : 0;
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView style={[styles.container, { backgroundColor: t.background }]} contentContainerStyle={styles.content}>
 
       {/* Top Banner with Logout */}
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <View style={styles.manaBanner}>
-          {MANA.map((m) => (
-            <View key={m} style={styles.manaOrb}>
-              <Text style={styles.manaEmoji}>{m}</Text>
-            </View>
-          ))}
+          {MANA.map((m) => {
+            const isActive = activeTheme === m.theme;
+            return (
+              <Pressable
+                key={m.theme}
+                style={[
+                  styles.manaOrb,
+                  { backgroundColor: isActive ? t.surface : "#1a1a26", borderColor: isActive ? t.primary : "#2a2a3a" }
+                ]}
+                onPress={() => {
+                  setTheme(m.theme);
+                  supabase.auth.updateUser({ data: { mana_type: m.theme } });
+                }}
+              >
+                <Text style={styles.manaEmoji}>{m.emoji}</Text>
+              </Pressable>
+            );
+          })}
         </View>
         <Pressable onPress={() => signOut()} style={{ padding: 8 }}>
           <Text style={{ color: "#ef4444", fontSize: 13, fontWeight: "600" }}>🚪 Sign Out</Text>

@@ -9,44 +9,70 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
 } from "react-native";
 import { supabase } from "@/lib/supabase";
 import { router } from "expo-router";
 
+const ALLOWED_USERS = [
+  { name: "JC", email: "jc@thevault.com" },
+  { name: "Leslie", email: "leslie@thevault.com" },
+  { name: "Ben", email: "ben@thevault.com" },
+  { name: "Richard", email: "richard@thevault.com" },
+  { name: "Garrett", email: "garrett@thevault.com" },
+  { name: "Brian", email: "brian@thevault.com" },
+  { name: "Guest", email: "guest@thevault.com" },
+];
+
 export default function LoginScreen() {
-  const [email, setEmail] = useState("");
+  const [selectedUser, setSelectedUser] = useState<typeof ALLOWED_USERS[0] | null>(null);
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [isSignUp, setIsSignUp] = useState(false);
 
   async function handleAuth() {
-    if (!email || !password) {
-      Alert.alert("Error", "Please fill in all fields");
+    if (!selectedUser || !password) {
+      Alert.alert("Error", "Please provide the password for this account.");
       return;
     }
 
     setLoading(true);
     try {
-      if (isSignUp) {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-        });
-        if (error) throw error;
-        Alert.alert("Success", "Check your email for the confirmation link!");
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) throw error;
-        router.replace("/(tabs)");
-      }
+      // Always sign in, sign up is removed for security
+      const { error } = await supabase.auth.signInWithPassword({
+        email: selectedUser.email,
+        password,
+      });
+      if (error) throw error;
+      router.replace("/(tabs)");
     } catch (error: any) {
       Alert.alert("Error", error.message);
     } finally {
       setLoading(false);
     }
+  }
+
+  if (!selectedUser) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.logoEmoji}>🛡️</Text>
+          <Text style={styles.title}>The Vault</Text>
+          <Text style={styles.subtitle}>Select your identity</Text>
+        </View>
+
+        <ScrollView contentContainerStyle={styles.grid}>
+          {ALLOWED_USERS.map((user) => (
+            <TouchableOpacity
+              key={user.name}
+              style={styles.userCard}
+              onPress={() => setSelectedUser(user)}
+            >
+              <Text style={styles.userCardText}>{user.name}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+    );
   }
 
   return (
@@ -55,28 +81,17 @@ export default function LoginScreen() {
       style={styles.container}
     >
       <View style={styles.content}>
+        <TouchableOpacity style={styles.backBtn} onPress={() => setSelectedUser(null)}>
+          <Text style={styles.backBtnText}>← Back</Text>
+        </TouchableOpacity>
+
         <View style={styles.header}>
           <Text style={styles.logoEmoji}>🛡️</Text>
-          <Text style={styles.title}>The Vault</Text>
-          <Text style={styles.subtitle}>
-            {isSignUp ? "Create your Planeswalker account" : "Welcome back, Planeswalker"}
-          </Text>
+          <Text style={styles.title}>Welcome, {selectedUser.name}</Text>
+          <Text style={styles.subtitle}>Enter your password to unlock the Vault</Text>
         </View>
 
         <View style={styles.form}>
-          <View style={styles.inputContainer}>
-            <Text style={styles.label}>Email address</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="jace.beleren@ravnica.com"
-              placeholderTextColor="#606078"
-              value={email}
-              onChangeText={setEmail}
-              autoCapitalize="none"
-              keyboardType="email-address"
-            />
-          </View>
-
           <View style={styles.inputContainer}>
             <Text style={styles.label}>Password</Text>
             <TextInput
@@ -86,6 +101,8 @@ export default function LoginScreen() {
               value={password}
               onChangeText={setPassword}
               secureTextEntry
+              autoFocus
+              onSubmitEditing={handleAuth}
             />
           </View>
 
@@ -97,26 +114,9 @@ export default function LoginScreen() {
             {loading ? (
               <ActivityIndicator color="#0a0a0f" />
             ) : (
-              <Text style={styles.authButtonText}>
-                {isSignUp ? "Begin Your Journey" : "Enter The Vault"}
-              </Text>
+              <Text style={styles.authButtonText}>Enter The Vault</Text>
             )}
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.toggleButton}
-            onPress={() => setIsSignUp(!isSignUp)}
-          >
-            <Text style={styles.toggleText}>
-              {isSignUp
-                ? "Already have an account? Log in"
-                : "New here? Create an account"}
-            </Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>Built with Magic in mind.</Text>
         </View>
       </View>
     </KeyboardAvoidingView>
@@ -127,6 +127,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#0a0a0f",
+    paddingTop: 60,
   },
   content: {
     flex: 1,
@@ -143,9 +144,9 @@ const styles = StyleSheet.create({
   },
   title: {
     color: "#f0f0f8",
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: "900",
-    letterSpacing: 2,
+    letterSpacing: 1,
     textTransform: "uppercase",
   },
   subtitle: {
@@ -153,6 +154,35 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginTop: 8,
     textAlign: "center",
+  },
+  grid: {
+    padding: 24,
+    gap: 12,
+  },
+  userCard: {
+    backgroundColor: "#12121a",
+    borderRadius: 12,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: "#222233",
+    alignItems: "center",
+  },
+  userCardText: {
+    color: "#c89b3c",
+    fontSize: 18,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  backBtn: {
+    position: "absolute",
+    top: 0,
+    left: 24,
+  },
+  backBtnText: {
+    color: "#a0a0b8",
+    fontSize: 16,
+    fontWeight: "600",
   },
   form: {
     gap: 20,
@@ -194,26 +224,5 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     textTransform: "uppercase",
     letterSpacing: 1,
-  },
-  toggleButton: {
-    alignItems: "center",
-    marginTop: 10,
-  },
-  toggleText: {
-    color: "#a0a0b8",
-    fontSize: 14,
-    fontWeight: "600",
-  },
-  footer: {
-    position: "absolute",
-    bottom: 24,
-    left: 24,
-    right: 24,
-    alignItems: "center",
-  },
-  footerText: {
-    color: "#404050",
-    fontSize: 12,
-    fontStyle: "italic",
   },
 });

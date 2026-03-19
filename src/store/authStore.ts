@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
+import { useAppStore } from "./appStore";
 
 interface AuthStore {
   session: Session | null;
@@ -29,4 +30,10 @@ export const useAuthStore = create<AuthStore>((set) => ({
 // Initialize session listener
 supabase.auth.onAuthStateChange((_event, session) => {
   useAuthStore.getState().setSession(session);
+  const manaTheme = session?.user?.user_metadata?.mana_type;
+  if (manaTheme) {
+    useAppStore.getState().setTheme(manaTheme);
+  } else if (!session) {
+    useAppStore.getState().setTheme("C");
+  }
 });

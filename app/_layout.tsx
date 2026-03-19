@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { useAuthStore } from "@store/authStore";
+import { TouchableOpacity, Text } from "react-native";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -42,6 +43,11 @@ export default function RootLayout() {
             headerTintColor: "#f0f0f8",
             headerTitleStyle: { fontWeight: "700" },
             contentStyle: { backgroundColor: "#0a0a0f" },
+            headerRight: () => (
+              <TouchableOpacity onPress={() => router.navigate("/(tabs)" as any)} style={{ padding: 8 }}>
+                <Text style={{ fontSize: 20 }}>🏠</Text>
+              </TouchableOpacity>
+            ),
           }}
         >
           <Stack.Screen name="(auth)/login" options={{ headerShown: false }} />

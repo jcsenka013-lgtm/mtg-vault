@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import {
   View, Text, ScrollView, Pressable, TextInput,
   StyleSheet, Alert, Switch, ActivityIndicator,
@@ -6,15 +6,17 @@ import {
 import { router } from "expo-router";
 import { useAppStore } from "@store/appStore";
 import { addCard } from "@db/queries";
+import { searchCardByName, autocompleteCardName } from "@api/scryfall";
+import type { ScryfallCard } from "@mtgtypes/index";
 import * as Haptics from "expo-haptics";
 import "react-native-get-random-values";
 import { v4 as uuidv4 } from "uuid";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type RarityKey  = "common" | "uncommon" | "rare" | "mythic";
-type CondKey    = "NM" | "LP" | "MP" | "HP" | "DMG";
-type ColorKey   = "W" | "U" | "B" | "R" | "G";
-type TypeKey    = "Creature" | "Instant" | "Sorcery" | "Enchantment" | "Artifact" | "Planeswalker" | "Land" | "Other";
+type RarityKey = "common" | "uncommon" | "rare" | "mythic";
+type CondKey = "NM" | "LP" | "MP" | "HP" | "DMG";
+type ColorKey = "W" | "U" | "B" | "R" | "G";
+type TypeKey = "Creature" | "Instant" | "Sorcery" | "Enchantment" | "Artifact" | "Planeswalker" | "Land" | "Other";
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 const MANA_DEFS: { key: ColorKey; emoji: string; bg: string; fg: string; border: string }[] = [
@@ -30,21 +32,21 @@ const CARD_TYPES: TypeKey[] = [
 ];
 
 const TYPE_ART: Record<TypeKey, string> = {
-  Creature:     "🐉",
-  Instant:      "⚡",
-  Sorcery:      "🔮",
-  Enchantment:  "✨",
-  Artifact:     "⚙️",
+  Creature: "🐉",
+  Instant: "⚡",
+  Sorcery: "🔮",
+  Enchantment: "✨",
+  Artifact: "⚙️",
   Planeswalker: "🧙",
-  Land:         "🌋",
-  Other:        "🎴",
+  Land: "🌋",
+  Other: "🎴",
 };
 
 const RARITIES: { key: RarityKey; label: string; color: string }[] = [
-  { key: "common",   label: "Common",   color: "#a0a0b0" },
+  { key: "common", label: "Common", color: "#a0a0b0" },
   { key: "uncommon", label: "Uncommon", color: "#8ab4c4" },
-  { key: "rare",     label: "Rare",     color: "#e8c060" },
-  { key: "mythic",   label: "Mythic",   color: "#e87a3c" },
+  { key: "rare", label: "Rare", color: "#e8c060" },
+  { key: "mythic", label: "Mythic", color: "#e87a3c" },
 ];
 
 const CONDITIONS: CondKey[] = ["NM", "LP", "MP", "HP", "DMG"];
@@ -52,28 +54,39 @@ const CONDITIONS: CondKey[] = ["NM", "LP", "MP", "HP", "DMG"];
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function frameColor(colors: ColorKey[]): string {
   if (colors.length === 0) return "#555566";
-  if (colors.length  > 1) return "#c89b3c";
+  if (colors.length > 1) return "#c89b3c";
   return { W: "#c4b050", U: "#2a6aaa", B: "#5a3a7a", R: "#aa2a1a", G: "#1a6a30" }[colors[0]];
 }
 function innerBg(colors: ColorKey[]): string {
   if (colors.length === 0) return "#18182a";
-  if (colors.length  > 1) return "#1e170a";
+  if (colors.length > 1) return "#1e170a";
   return { W: "#1e1c10", U: "#0a1220", B: "#120a18", R: "#180a08", G: "#0a1410" }[colors[0]];
 }
 function artBg(colors: ColorKey[]): string {
   if (colors.length === 0) return "#0d0d1a";
-  if (colors.length  > 1) return "#130e06";
+  if (colors.length > 1) return "#130e06";
   return { W: "#18160a", U: "#060e1a", B: "#0e060e", R: "#140606", G: "#060e08" }[colors[0]];
+}
+
+function typeFromScryfall(typeLine: string): TypeKey {
+  if (typeLine.includes("Planeswalker")) return "Planeswalker";
+  if (typeLine.includes("Creature")) return "Creature";
+  if (typeLine.includes("Instant")) return "Instant";
+  if (typeLine.includes("Sorcery")) return "Sorcery";
+  if (typeLine.includes("Enchantment")) return "Enchantment";
+  if (typeLine.includes("Artifact")) return "Artifact";
+  if (typeLine.includes("Land")) return "Land";
+  return "Other";
 }
 
 // ─── Card Preview ─────────────────────────────────────────────────────────────
 function CardPreview({
   name, colors, cardType, subtype, rulesText,
-  power, toughness, loyalty, rarity, setCode, isFoil,
+  power, toughness, loyalty, rarity, setCode, isFoil, isFullArt
 }: {
   name: string; colors: ColorKey[]; cardType: TypeKey; subtype: string;
   rulesText: string; power: string; toughness: string; loyalty: string;
-  rarity: RarityKey; setCode: string; isFoil: boolean;
+  rarity: RarityKey; setCode: string; isFoil: boolean; isFullArt?: boolean;
 }) {
   const fc = frameColor(colors);
   const rarityColor = RARITIES.find((r) => r.key === rarity)?.color ?? "#a0a0b0";
@@ -111,6 +124,7 @@ function CardPreview({
           {isFoil && <View style={card.foilShimmer} />}
           <Text style={card.artEmoji}>{TYPE_ART[cardType]}</Text>
           {isFoil && <Text style={card.foilBadge}>✨ FOIL</Text>}
+          {isFullArt && <Text style={[card.foilBadge, { top: isFoil ? 24 : 8, color: "#c89b3c" }]}>🖼️ FULL ART</Text>}
         </View>
 
         {/* ── Type line ── */}
@@ -156,24 +170,113 @@ function CardPreview({
 export default function ManualEntryScreen() {
   const { activeSession } = useAppStore();
 
-  const [name,      setName]      = useState("");
-  const [colors,    setColors]    = useState<ColorKey[]>([]);
-  const [cardType,  setCardType]  = useState<TypeKey>("Creature");
-  const [subtype,   setSubtype]   = useState("");
+  const [name, setName] = useState("");
+  const [colors, setColors] = useState<ColorKey[]>([]);
+  const [cardType, setCardType] = useState<TypeKey>("Creature");
+  const [subtype, setSubtype] = useState("");
   const [rulesText, setRulesText] = useState("");
-  const [power,     setPower]     = useState("");
+  const [power, setPower] = useState("");
   const [toughness, setToughness] = useState("");
-  const [loyalty,   setLoyalty]   = useState("");
-  const [rarity,    setRarity]    = useState<RarityKey>("common");
-  const [setCode,   setSetCode]   = useState("");
-  const [collNum,   setCollNum]   = useState("");
+  const [loyalty, setLoyalty] = useState("");
+  const [rarity, setRarity] = useState<RarityKey>("common");
+  const [setCode, setSetCode] = useState("");
+  const [collNum, setCollNum] = useState("");
   const [condition, setCondition] = useState<CondKey>("NM");
-  const [isFoil,    setIsFoil]    = useState(false);
-  const [price,     setPrice]     = useState("");
-  const [saving,    setSaving]    = useState(false);
+  const [isFoil, setIsFoil] = useState(false);
+  const [isFullArt, setIsFullArt] = useState(false);
+  const [price, setPrice] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Scryfall lookup state
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [looking, setLooking] = useState(false);
+  const [filledFromScryfall, setFilledFromScryfall] = useState(false);
+  const [scryfallCard, setScryfallCard] = useState<ScryfallCard | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const toggleColor = (c: ColorKey) =>
     setColors((prev) => prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]);
+
+  // ── Autocomplete as user types ────────────────────────────────────────────
+  const handleNameChange = (text: string) => {
+    setName(text);
+    setFilledFromScryfall(false);
+    setScryfallCard(null);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (text.length >= 2) {
+      debounceRef.current = setTimeout(async () => {
+        const results = await autocompleteCardName(text);
+        setSuggestions(results);
+      }, 300);
+    } else {
+      setSuggestions([]);
+    }
+  };
+
+  // ── Fill all fields from a Scryfall card object ───────────────────────────
+  const fillFromScryfall = (sc: ScryfallCard) => {
+    setName(sc.name);
+    const validColors = (sc.colors ?? []).filter(
+      (c): c is ColorKey => ["W", "U", "B", "R", "G"].includes(c)
+    );
+    setColors(validColors);
+    const validRarity: RarityKey = ["common", "uncommon", "rare", "mythic"].includes(sc.rarity)
+      ? (sc.rarity as RarityKey)
+      : "common";
+    setRarity(validRarity);
+    setSetCode(sc.set.toUpperCase());
+    setCollNum(sc.collector_number);
+    const [mainType, subPart] = (sc.type_line ?? "").split("—").map((s) => s.trim());
+    setCardType(typeFromScryfall(mainType ?? ""));
+    setSubtype(subPart ?? "");
+    setRulesText(sc.oracle_text ?? "");
+    if (sc.power) setPower(sc.power);
+    if (sc.toughness) setToughness(sc.toughness);
+    if (sc.loyalty) setLoyalty(sc.loyalty);
+    const priceVal = isFoil ? sc.prices.usd_foil : sc.prices.usd;
+    if (priceVal) setPrice(priceVal);
+    setScryfallCard(sc);
+    setFilledFromScryfall(true);
+    setSuggestions([]);
+  };
+
+  // ── Lookup from Scryfall by current name ─────────────────────────────────
+  const handleScryfallLookup = async () => {
+    if (!name.trim()) return;
+    setSuggestions([]);
+    setLooking(true);
+    try {
+      const results = await searchCardByName(name.trim());
+      if (results.length === 0) {
+        Alert.alert("Not Found", "No card found with that name on Scryfall.");
+        return;
+      }
+      fillFromScryfall(results[0]);
+      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {
+      Alert.alert("Error", "Failed to look up card. Check your connection.");
+    } finally {
+      setLooking(false);
+    }
+  };
+
+  // ── Select an autocomplete suggestion ────────────────────────────────────
+  const handleSuggestionSelect = async (suggestion: string) => {
+    setSuggestions([]);
+    setName(suggestion);
+    setLooking(true);
+    try {
+      const results = await searchCardByName(suggestion);
+      if (results.length > 0) {
+        fillFromScryfall(results[0]);
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+    } catch {
+      // Silently ignore — user can still fill manually
+    } finally {
+      setLooking(false);
+    }
+  };
 
   const handleSave = async () => {
     if (!name.trim()) {
@@ -188,21 +291,23 @@ export default function ManualEntryScreen() {
     setSaving(true);
     try {
       await addCard({
-        sessionId:       activeSession.id,
-        scryfallId:      uuidv4(),
-        name:            name.trim(),
-        setCode:         setCode.trim().toUpperCase() || "???",
-        setName:         setCode.trim().toUpperCase() || "",
+        sessionId: activeSession.id,
+        scryfallId: scryfallCard?.id ?? uuidv4(),
+        name: name.trim(),
+        setCode: setCode.trim().toUpperCase() || "???",
+        setName: ((scryfallCard?.set_name ?? setCode.trim().toUpperCase()) || "") + (isFullArt ? " (Full Art)" : ""),
         collectorNumber: collNum.trim() || "0",
         rarity,
         colors,
         isFoil,
         condition,
-        quantity:        1,
-        priceUsd:        isFoil ? null : parsedPrice,
-        priceUsdFoil:    isFoil ? parsedPrice : null,
-        imageUri:        null,
-        scryfallUri:     null,
+        quantity: 1,
+        priceUsd: isFoil ? null : parsedPrice,
+        priceUsdFoil: isFoil ? parsedPrice : null,
+        imageUri: scryfallCard
+          ? (scryfallCard.image_uris?.normal ?? scryfallCard.card_faces?.[0]?.image_uris?.normal ?? null)
+          : null,
+        scryfallUri: scryfallCard?.scryfall_uri ?? null,
       });
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.back();
@@ -226,17 +331,61 @@ export default function ManualEntryScreen() {
           <CardPreview
             name={name} colors={colors} cardType={cardType} subtype={subtype}
             rulesText={rulesText} power={power} toughness={toughness}
-            loyalty={loyalty} rarity={rarity} setCode={setCode} isFoil={isFoil}
+            loyalty={loyalty} rarity={rarity} setCode={setCode} isFoil={isFoil} isFullArt={isFullArt}
           />
         </View>
 
-        {/* ── Card Name ── */}
+        {/* ── Scryfall Lookup Banner ── */}
+        {filledFromScryfall && scryfallCard && (
+          <View style={s.scryfallBanner}>
+            <Text style={s.scryfallBannerIcon}>✅</Text>
+            <Text style={s.scryfallBannerText}>
+              Filled from Scryfall · {scryfallCard.set_name}
+            </Text>
+          </View>
+        )}
+
+        {/* ── Card Name + Lookup ── */}
         <Text style={s.label}>Card Name *</Text>
-        <TextInput
-          style={s.input} value={name} onChangeText={setName}
-          placeholder="e.g. Draconic Overlord"
-          placeholderTextColor="#606078" autoFocus
-        />
+        <View style={s.nameRow}>
+          <TextInput
+            style={[s.input, { flex: 1, marginBottom: 0 }]}
+            value={name}
+            onChangeText={handleNameChange}
+            placeholder="e.g. Lightning Bolt"
+            placeholderTextColor="#606078"
+            autoFocus
+            returnKeyType="search"
+            onSubmitEditing={handleScryfallLookup}
+          />
+          <Pressable
+            style={[s.lookupBtn, (!name.trim() || looking) && s.btnDisabled]}
+            onPress={handleScryfallLookup}
+            disabled={!name.trim() || looking}
+          >
+            {looking
+              ? <ActivityIndicator color="#0a0a0f" size="small" />
+              : <Text style={s.lookupBtnText}>🔍</Text>
+            }
+          </Pressable>
+        </View>
+
+        {/* ── Autocomplete Suggestions ── */}
+        {suggestions.length > 0 && (
+          <View style={s.suggestionsBox}>
+            {suggestions.map((sug) => (
+              <Pressable
+                key={sug}
+                style={s.suggestionItem}
+                onPress={() => handleSuggestionSelect(sug)}
+              >
+                <Text style={s.suggestionText}>{sug}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
+
+        <View style={{ height: 16 }} />
 
         {/* ── Color Identity ── */}
         <Text style={s.label}>Color Identity</Text>
@@ -387,6 +536,16 @@ export default function ManualEntryScreen() {
           />
         </View>
 
+        {/* ── Full Art ── */}
+        <View style={s.settingRow}>
+          <Text style={s.settingLabel}>🖼️ Full Art</Text>
+          <Switch
+            value={isFullArt} onValueChange={setIsFullArt}
+            trackColor={{ false: "#222233", true: "#c89b3c" }}
+            thumbColor="#f0f0f8"
+          />
+        </View>
+
         {/* ── Price ── */}
         <Text style={s.label}>Market Value (optional)</Text>
         <TextInput
@@ -494,7 +653,7 @@ const card = StyleSheet.create({
     gap: 5,
   },
   typeTxt: { color: "#d8d8f0", fontSize: 11, fontWeight: "700", flex: 1 },
-  setDot:  { fontSize: 11 },
+  setDot: { fontSize: 11 },
   setCode: { color: "#808098", fontSize: 10, fontWeight: "600" },
   textBox: {
     minHeight: 106,
@@ -528,13 +687,29 @@ const card = StyleSheet.create({
 // ─── Screen Styles ────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0a0a0f" },
-  content:   { padding: 20, paddingBottom: 40 },
+  content: { padding: 20, paddingBottom: 40 },
 
   previewArea: {
     alignItems: "center",
     marginBottom: 32,
     marginTop: 4,
   },
+
+  // Scryfall banner
+  scryfallBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#0a2010",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#22c55e44",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 20,
+  },
+  scryfallBannerIcon: { fontSize: 14 },
+  scryfallBannerText: { color: "#22c55e", fontSize: 13, fontWeight: "600", flex: 1 },
 
   label: {
     color: "#a0a0b8",
@@ -555,6 +730,41 @@ const s = StyleSheet.create({
     marginBottom: 20,
   },
   multiline: { height: 90, textAlignVertical: "top" },
+
+  // Name row with lookup button
+  nameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 0,
+  },
+  lookupBtn: {
+    backgroundColor: "#c89b3c",
+    borderRadius: 14,
+    width: 50,
+    height: 50,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  lookupBtnText: { fontSize: 20 },
+
+  // Autocomplete suggestions
+  suggestionsBox: {
+    backgroundColor: "#12121a",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#c89b3c44",
+    overflow: "hidden",
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  suggestionItem: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#1e1e2e",
+  },
+  suggestionText: { color: "#f0f0f8", fontSize: 14 },
 
   // Mana
   manaRow: { flexDirection: "row", gap: 6, marginBottom: 20 },
@@ -581,9 +791,9 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#222233",
   },
-  chipActive:   { borderColor: "#c89b3c", backgroundColor: "#1e1a0f" },
-  chipTxt:      { color: "#a0a0b8", fontSize: 13, fontWeight: "600" },
-  chipTxtActive:{ color: "#c89b3c" },
+  chipActive: { borderColor: "#c89b3c", backgroundColor: "#1e1a0f" },
+  chipTxt: { color: "#a0a0b8", fontSize: 13, fontWeight: "600" },
+  chipTxtActive: { color: "#c89b3c" },
 
   // Rarity
   rarityRow: { flexDirection: "row", gap: 8, marginBottom: 20 },
@@ -597,13 +807,13 @@ const s = StyleSheet.create({
     borderColor: "#222233",
   },
   rarityDiamond: { fontSize: 14, marginBottom: 3 },
-  rarityLabel:   { color: "#606078", fontSize: 10, fontWeight: "600" },
+  rarityLabel: { color: "#606078", fontSize: 10, fontWeight: "600" },
 
   // Two-column layout
   twoCol: { flexDirection: "row" },
 
   // P/T
-  ptRow:   { flexDirection: "row", alignItems: "center", marginBottom: 20 },
+  ptRow: { flexDirection: "row", alignItems: "center", marginBottom: 20 },
   ptInput: { flex: 1, marginBottom: 0 },
   ptSlash: { color: "#f0f0f8", fontSize: 26, fontWeight: "900", marginHorizontal: 10 },
 
@@ -619,7 +829,7 @@ const s = StyleSheet.create({
     borderColor: "#222233",
   },
   condBtnActive: { backgroundColor: "#1e1a0f", borderColor: "#c89b3c" },
-  condTxt:       { color: "#a0a0b8", fontWeight: "700", fontSize: 13 },
+  condTxt: { color: "#a0a0b8", fontWeight: "700", fontSize: 13 },
   condTxtActive: { color: "#c89b3c" },
 
   // Foil toggle
@@ -656,8 +866,8 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#222233",
   },
-  cancelTxt:  { color: "#a0a0b8", fontWeight: "700" },
-  saveBtn:    { flex: 1, backgroundColor: "#c89b3c", borderRadius: 14, paddingVertical: 16, alignItems: "center" },
-  saveTxt:    { color: "#0a0a0f", fontWeight: "900", fontSize: 16 },
-  btnDisabled:{ opacity: 0.4 },
+  cancelTxt: { color: "#a0a0b8", fontWeight: "700" },
+  saveBtn: { flex: 1, backgroundColor: "#c89b3c", borderRadius: 14, paddingVertical: 16, alignItems: "center" },
+  saveTxt: { color: "#0a0a0f", fontWeight: "900", fontSize: 16 },
+  btnDisabled: { opacity: 0.4 },
 });

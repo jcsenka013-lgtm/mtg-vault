@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { ScannedCard } from "@mtgtypes/index";
+import { ManaTheme } from "@/theme";
 
 interface ScanSession {
   id: string;
@@ -8,6 +9,10 @@ interface ScanSession {
 }
 
 interface AppStore {
+  // Theme state
+  activeTheme: ManaTheme;
+  setTheme: (theme: ManaTheme) => void;
+
   // Active session
   activeSession: ScanSession | null;
   setActiveSession: (session: ScanSession | null) => void;
@@ -37,6 +42,9 @@ interface AppStore {
 }
 
 export const useAppStore = create<AppStore>((set) => ({
+  activeTheme: "C",
+  setTheme: (theme) => set({ activeTheme: theme }),
+
   activeSession: null,
   setActiveSession: (session) => set({ activeSession: session }),
   updateSessionCost: (cost) =>
