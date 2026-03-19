@@ -29,12 +29,14 @@ export default function LoginScreen() {
   const [selectedUser, setSelectedUser] = useState<typeof ALLOWED_USERS[0] | null>(null);
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
 
   async function handleAuth() {
+    setErrorMessage("");
     try {
       console.log("DEBUG: handleAuth started for", selectedUser?.email);
       if (!selectedUser || !password) {
-        Alert.alert("Error", "Please provide the password for this account.");
+        setErrorMessage("Please provide the password for this account.");
         return;
       }
 
@@ -45,7 +47,7 @@ export default function LoginScreen() {
         email: selectedUser.email,
         password,
       });
-      
+
       console.log("DEBUG: Supabase response:", { hasData: !!data, hasError: !!error, errorMessage: error?.message });
 
       if (error) {
@@ -57,12 +59,12 @@ export default function LoginScreen() {
         }
         throw error;
       }
-      
+
       console.log("DEBUG: Login successful, navigating...");
       router.replace("/(tabs)");
     } catch (error: any) {
       console.error("DEBUG: Login catch block error:", error);
-      Alert.alert("Login Failed", error?.message || "An unexpected error occurred during login.");
+      setErrorMessage(error?.message || "An unexpected error occurred during login.");
     } finally {
       setLoading(false);
       console.log("DEBUG: handleAuth finished");
@@ -124,6 +126,12 @@ export default function LoginScreen() {
             />
           </View>
 
+          {errorMessage ? (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorText}>{errorMessage}</Text>
+            </View>
+          ) : null}
+
           <TouchableOpacity
             style={styles.authButton}
             onPress={handleAuth}
@@ -172,6 +180,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginTop: 8,
     textAlign: "center",
+  },
+  errorBox: {
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
+    borderColor: "#ef4444",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 20,
+  },
+  errorText: {
+    color: "#fca5a5",
+    fontSize: 14,
+    textAlign: "center",
+    fontWeight: "600",
   },
   grid: {
     padding: 24,
