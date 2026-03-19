@@ -39,14 +39,24 @@ export default function LoginScreen() {
     setLoading(true);
     try {
       // Always sign in, sign up is removed for security
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email: selectedUser.email,
         password,
       });
-      if (error) throw error;
+      
+      if (error) {
+        if (error.message.includes("Invalid login credentials")) {
+          throw new Error("Incorrect password. Please try again.");
+        }
+        if (error.message.includes("Email not confirmed")) {
+          throw new Error("Your account is waiting to be confirmed in the Supabase Dashboard. JC needs to click 'Confirm' on your user.");
+        }
+        throw error;
+      }
+      
       router.replace("/(tabs)");
     } catch (error: any) {
-      Alert.alert("Error", error.message);
+      Alert.alert("Login Failed", error.message);
     } finally {
       setLoading(false);
     }
