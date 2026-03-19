@@ -14,6 +14,7 @@ import * as Haptics from "expo-haptics";
 import { useAppStore } from "@store/appStore";
 import { searchCardByName } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
+import Tesseract from "tesseract.js";
 
 // Regex patterns for OCR text extraction
 const COLLECTOR_PATTERN = /(\d{1,4})\s*\/\s*(\d{1,4})/;
@@ -23,9 +24,12 @@ function extractCardInfo(text: string): { name: string; collectorNumber?: string
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
   if (lines.length === 0) return null;
 
-  // Best candidate: longest line that looks like a card name (title case, 3-50 chars)
-  const nameLine = lines.find(
-    (l) => l.length >= 3 && l.length <= 50 && /^[A-Z][a-zA-Z,' -]+$/.test(l)
+  // Clean lines: Remove weird symbols that OCR often hallucinates at the edges
+  const cleanedLines = lines.map(l => l.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, ''));
+
+  // Find the first line that looks like a valid card name (at least 3 chars, contains letters, not just numbers)
+  const nameLine = cleanedLines.find(
+    (l) => l.length >= 3 && l.length <= 50 && /[a-zA-Z]/.test(l) && !/^\d+$/.test(l)
   );
 
   const collectorMatch = text.match(COLLECTOR_PATTERN);
@@ -143,10 +147,16 @@ export default function ScannerScreen() {
           ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
           const base64Data = canvas.toDataURL("image/jpeg", 0.8);
           
-          // MOCK: Here the base64Data would be sent to an OCR API
-          console.log("Captured Web Image! Base64 length:", base64Data.length);
-          if (window) {
-             window.alert("Picture captured! Image data ready for OCR. (Base64 length: " + base64Data.length + ")");
+          console.log("Starting Web OCR analysis...");
+          const worker = await Tesseract.createWorker("eng");
+          const { data: { text } } = await worker.recognize(base64Data);
+          await worker.terminate();
+          
+          console.log("OCR Text Extracted:\n", text);
+          if (text.trim()) {
+            await handleOcrResult(text);
+          } else {
+            if (window) window.alert("Could not read any text. Try getting closer or improving lighting.");
           }
         }
       } else {
@@ -154,9 +164,18 @@ export default function ScannerScreen() {
           await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           const photo = await cameraRef.current.takePictureAsync({ base64: true });
           if (photo?.base64) {
-            // MOCK: Here the base64Data would be sent to an OCR API
-            console.log("Captured Native Image! Base64 length:", photo.base64.length);
-            Alert.alert("Captured", "Picture captured! Image data ready for OCR.");
+            console.log("Starting Native OCR analysis...");
+            const worker = await Tesseract.createWorker("eng");
+            // Native uses data URI format for base64 images
+            const { data: { text } } = await worker.recognize(`data:image/jpeg;base64,${photo.base64}`);
+            await worker.terminate();
+            
+            console.log("OCR Text Extracted:\n", text);
+            if (text.trim()) {
+              await handleOcrResult(text);
+            } else {
+              Alert.alert("No Text Detected", "Could not read any text. Try getting closer or improving lighting.");
+            }
           }
         }
       }
