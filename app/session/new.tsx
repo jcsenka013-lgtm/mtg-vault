@@ -126,6 +126,13 @@ export default function NewSessionScreen() {
           : <Text style={styles.createBtnText}>✨ Begin Opening</Text>
         }
       </Pressable>
+
+      <View style={{ marginTop: 24, alignItems: "center" }}>
+        <Text style={{ color: "#a0a0b8", marginBottom: 8 }}>Just logging one card?</Text>
+        <Pressable onPress={() => router.replace("/manual-entry")}>
+          <Text style={{ color: "#c89b3c", fontSize: 16, fontWeight: "700" }}>✏️ Individual Entry</Text>
+        </Pressable>
+      </View>
     </ScrollView>
   );
 }

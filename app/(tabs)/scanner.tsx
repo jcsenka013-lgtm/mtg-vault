@@ -51,6 +51,7 @@ export default function ScannerScreen() {
   const [lastScanned, setLastScanned] = useState<string | null>(null);
   const [flash, setFlash] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [autoScan, setAutoScan] = useState(false);
   
   const cooldownRef = useRef(false);
   const cameraRef = useRef<CameraView>(null);
@@ -67,7 +68,10 @@ export default function ScannerScreen() {
   const requestWebPermission = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: "environment" } 
+        video: { 
+          facingMode: "environment",
+          advanced: [{ focusMode: "continuous" } as any]
+        } 
       });
       if (videoRef.current) {
          videoRef.current.srcObject = stream;
@@ -118,6 +122,7 @@ export default function ScannerScreen() {
       try {
         const results = await searchCardByName(info.name);
         if (results.length > 0) {
+          if (autoScan) setAutoScan(false); // Pause auto scanning when pushing to confirm
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           setPendingCard(null); // will be set on confirm screen
           router.push({ pathname: "/confirm", params: { candidates: JSON.stringify(results), sessionId: activeSession.id } });
@@ -130,10 +135,10 @@ export default function ScannerScreen() {
         }, 3000);
       }
     },
-    [activeSession, lastScanned, setPendingCard]
+    [activeSession, lastScanned, setPendingCard, autoScan]
   );
 
-  const captureManual = async () => {
+  const captureManual = async (silent = false) => {
     if (isProcessing) return;
     setIsProcessing(true);
     try {
@@ -155,7 +160,7 @@ export default function ScannerScreen() {
           console.log("OCR Text Extracted:\n", text);
           if (text.trim()) {
             await handleOcrResult(text);
-          } else {
+          } else if (!silent) {
             if (window) window.alert("Could not read any text. Try getting closer or improving lighting.");
           }
         }
@@ -173,7 +178,7 @@ export default function ScannerScreen() {
             console.log("OCR Text Extracted:\n", text);
             if (text.trim()) {
               await handleOcrResult(text);
-            } else {
+            } else if (!silent) {
               Alert.alert("No Text Detected", "Could not read any text. Try getting closer or improving lighting.");
             }
           }
@@ -181,11 +186,32 @@ export default function ScannerScreen() {
       }
     } catch (e) {
        console.error("Capture failed", e);
-       Alert.alert("Error", "Failed to capture image.");
+       if (!silent) Alert.alert("Error", "Failed to capture image.");
     } finally {
       setIsProcessing(false);
     }
   };
+
+  // Continuous background scanner hook
+  useEffect(() => {
+    let timeoutId: ReturnType<typeof setTimeout>;
+
+    const performAutoScan = async () => {
+      if (!autoScan || isProcessing || !scanning) {
+        if (autoScan) timeoutId = setTimeout(performAutoScan, 1000);
+        return;
+      }
+      
+      await captureManual(true);
+      timeoutId = setTimeout(performAutoScan, 2000); // Wait 2s before taking the next snapshot
+    };
+
+    if (autoScan) {
+      performAutoScan();
+    }
+
+    return () => clearTimeout(timeoutId);
+  }, [autoScan, isProcessing, scanning]);
 
   const isNativePermGranted = permission?.granted;
   const isWebPermGranted = webPermissionGranted;
@@ -244,6 +270,7 @@ export default function ScannerScreen() {
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
             facing="back"
+            autofocus="on"
             flash={flash ? "on" : "off"}
             onBarcodeScanned={undefined}
           />
@@ -289,15 +316,20 @@ export default function ScannerScreen() {
         <View style={styles.bottomBar}>
           <View style={styles.actionRow}>
             <Pressable
-              style={styles.captureBtn}
-              onPress={captureManual}
+              style={[styles.captureBtn, autoScan && styles.captureBtnActive]}
+              onPress={() => setAutoScan(!autoScan)}
+            >
+              <Text style={styles.captureBtnText}>
+                {autoScan ? "⏱ Auto-Scan: ON" : "⏱ Auto-Scan: OFF"}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.manualBtn}
+              onPress={() => captureManual()}
               disabled={isProcessing}
             >
-              {isProcessing ? (
-                 <ActivityIndicator color="#0a0a0f" />
-              ) : (
-                 <Text style={styles.captureBtnText}>📸 Capture Picture</Text>
-              )}
+              <Text style={styles.manualBtnText}>📸 Capture 1x</Text>
             </Pressable>
 
             <Pressable
@@ -347,9 +379,10 @@ const styles = StyleSheet.create({
   cornerBR: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0 },
   frameTip: { color: "rgba(160,160,184,0.7)", fontSize: 13, backgroundColor: "rgba(10,10,15,0.7)", paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12, overflow: "hidden" },
   bottomBar: { paddingHorizontal: 16, paddingBottom: 40, paddingTop: 16, backgroundColor: "rgba(10,10,15,0.8)", alignItems: "center", zIndex: 10 },
-  actionRow: { flexDirection: "row", gap: 12, flexWrap: "wrap", justifyContent: "center" },
-  captureBtn: { backgroundColor: ACCENT, borderRadius: 24, paddingHorizontal: 24, paddingVertical: 14, minWidth: 160, alignItems: "center" },
-  captureBtnText: { color: "#0a0a0f", fontWeight: "800", fontSize: 15 },
-  manualBtn: { backgroundColor: "#12121a", borderRadius: 24, paddingHorizontal: 24, paddingVertical: 14, borderWidth: 1, borderColor: "#222233" },
-  manualBtnText: { color: "#f0f0f8", fontWeight: "700", fontSize: 15 },
+  actionRow: { flexDirection: "row", gap: 8, flexWrap: "wrap", justifyContent: "center" },
+  captureBtn: { backgroundColor: "#12121a", borderRadius: 24, paddingHorizontal: 20, paddingVertical: 14, borderWidth: 1, borderColor: "#222233" },
+  captureBtnActive: { backgroundColor: "rgba(200, 155, 60, 0.2)", borderColor: ACCENT },
+  captureBtnText: { color: "#f0f0f8", fontWeight: "700", fontSize: 13 },
+  manualBtn: { backgroundColor: "#12121a", borderRadius: 24, paddingHorizontal: 20, paddingVertical: 14, borderWidth: 1, borderColor: "#222233" },
+  manualBtnText: { color: "#f0f0f8", fontWeight: "700", fontSize: 13 },
 });
