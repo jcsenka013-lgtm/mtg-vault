@@ -48,5 +48,7 @@ This project is configured for **Cloudflare Pages**.
 - **Output Directory**: `dist/`
 - **Node.js Version**: 20
 
+For a step-by-step guide on making your changes live, see the [Deployment Guide](deployment_guide.md).
+
 ---
 *Built with Magic in mind.*

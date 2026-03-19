@@ -1,7 +1,9 @@
 import "../global.css";
-import { Stack } from "expo-router";
+import { Stack, router, useSegments } from "expo-router";
+import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { useAuthStore } from "@store/authStore";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -13,6 +15,23 @@ const queryClient = new QueryClient({
 });
 
 export default function RootLayout() {
+  const { session, isLoading } = useAuthStore();
+  const segments = useSegments();
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    // Use string check for segments to avoid strict type mismatches in static analysis
+    const inAuthGroup = (segments as any).includes("(auth)");
+
+    if (!session && !inAuthGroup) {
+      // Redirect to login if not authenticated
+      router.replace("/login" as any);
+    } else if (session && inAuthGroup) {
+      // Redirect to tabs if authenticated and in auth group
+      router.replace("/(tabs)" as any);
+    }
+  }, [session, segments, isLoading]);
 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0a0a0f" }}>
@@ -25,6 +44,7 @@ export default function RootLayout() {
             contentStyle: { backgroundColor: "#0a0a0f" },
           }}
         >
+          <Stack.Screen name="(auth)/login" options={{ headerShown: false }} />
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen
             name="session/new"

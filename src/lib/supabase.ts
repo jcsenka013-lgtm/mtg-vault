@@ -5,15 +5,16 @@ const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    // Anonymous shared-pool model — no individual auth required
-    autoRefreshToken: false,
-    persistSession: false,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
   },
 });
 
 // TypeScript types matching our Supabase schema
 export interface DbSession {
   id: string;
+  user_id: string;
   name: string;
   set_code: string | null;
   cost_paid: number;

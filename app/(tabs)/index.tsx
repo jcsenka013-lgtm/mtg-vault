@@ -5,6 +5,7 @@ import {
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useAppStore } from "@store/appStore";
+import { useAuthStore } from "@store/authStore";
 import { getAllSessions, calculateSessionROI, updateSessionCost } from "@db/queries";
 import type { DbSession } from "@/lib/supabase";
 import type { SessionROI } from "@mtgtypes/index";
@@ -20,12 +21,15 @@ const RARITY_COLORS: Record<string, string> = {
 
 export default function DashboardScreen() {
   const { activeSession, setActiveSession, updateSessionCost: updateStoreCost } = useAppStore();
+  const { signOut } = useAuthStore();
   const [sessions, setSessions] = useState<DbSession[]>([]);
+  // ... rest of state
   const [roi, setRoi] = useState<SessionROI | null>(null);
   const [costInput, setCostInput] = useState("");
   const [loading, setLoading] = useState(false);
 
   const loadData = useCallback(async () => {
+    // ... load data logic
     setLoading(true);
     try {
       const allSessions = await getAllSessions();
@@ -45,6 +49,7 @@ export default function DashboardScreen() {
   useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
 
   const handleCostUpdate = async () => {
+    // ... handle cost update logic
     if (!activeSession) return;
     const cost = parseFloat(costInput);
     if (isNaN(cost) || cost < 0) return;
@@ -60,13 +65,18 @@ export default function DashboardScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
 
-      {/* Mana Banner */}
-      <View style={styles.manaBanner}>
-        {MANA.map((m) => (
-          <View key={m} style={styles.manaOrb}>
-            <Text style={styles.manaEmoji}>{m}</Text>
-          </View>
-        ))}
+      {/* Top Banner with Logout */}
+      <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <View style={styles.manaBanner}>
+          {MANA.map((m) => (
+            <View key={m} style={styles.manaOrb}>
+              <Text style={styles.manaEmoji}>{m}</Text>
+            </View>
+          ))}
+        </View>
+        <Pressable onPress={() => signOut()} style={{ padding: 8 }}>
+          <Text style={{ color: "#ef4444", fontSize: 13, fontWeight: "600" }}>🚪 Sign Out</Text>
+        </Pressable>
       </View>
 
       {/* Opening Picker */}

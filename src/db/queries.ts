@@ -9,9 +9,13 @@ export async function createSession(data: {
   setCode?: string | null;
   costPaid?: number;
 }): Promise<DbSession> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Authenticated user required to create a session");
+
   const { data: result, error } = await supabase
     .from("sessions")
     .insert({
+      user_id: user.id,
       name: data.name,
       set_code: data.setCode ?? null,
       cost_paid: data.costPaid ?? 0,
