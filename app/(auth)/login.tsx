@@ -15,13 +15,13 @@ import { supabase } from "@/lib/supabase";
 import { router } from "expo-router";
 
 const ALLOWED_USERS = [
-  { name: "JC", email: "jc@thevault.com" },
-  { name: "Leslie", email: "leslie@thevault.com" },
-  { name: "Ben", email: "ben@thevault.com" },
-  { name: "Richard", email: "richard@thevault.com" },
-  { name: "Garrett", email: "garrett@thevault.com" },
-  { name: "Brian", email: "brian@thevault.com" },
-  { name: "Guest", email: "guest@thevault.com" },
+  { name: "JC", email: "jc@cole.tech" },
+  { name: "Leslie", email: "leslie@cole.tech" },
+  { name: "Ben", email: "ben@cole.tech" },
+  { name: "Richard", email: "richard@cole.tech" },
+  { name: "Garrett", email: "garrett@cole.tech" },
+  { name: "Brian", email: "brian@cole.tech" },
+  { name: "Guest", email: "guest@cole.tech" },
 ];
 
 export default function LoginScreen() {

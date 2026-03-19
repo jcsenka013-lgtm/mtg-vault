@@ -23,13 +23,13 @@ supabaseKey = supabaseKey || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const users = [
-  { email: "jc@thevault.com", password: "planeswalker123", name: "JC" },
-  { email: "leslie@thevault.com", password: "planeswalker123", name: "Leslie" },
-  { email: "ben@thevault.com", password: "planeswalker123", name: "Ben" },
-  { email: "richard@thevault.com", password: "planeswalker123", name: "Richard" },
-  { email: "garrett@thevault.com", password: "planeswalker123", name: "Garrett" },
-  { email: "brian@thevault.com", password: "planeswalker123", name: "Brian" },
-  { email: "guest@thevault.com", password: "planeswalker123", name: "Guest" }
+  { email: "jc@cole.tech", password: "planeswalker123", name: "JC" },
+  { email: "leslie@cole.tech", password: "planeswalker123", name: "Leslie" },
+  { email: "ben@cole.tech", password: "planeswalker123", name: "Ben" },
+  { email: "richard@cole.tech", password: "planeswalker123", name: "Richard" },
+  { email: "garrett@cole.tech", password: "planeswalker123", name: "Garrett" },
+  { email: "brian@cole.tech", password: "planeswalker123", name: "Brian" },
+  { email: "guest@cole.tech", password: "planeswalker123", name: "Guest" }
 ];
 
 async function createUsers() {
