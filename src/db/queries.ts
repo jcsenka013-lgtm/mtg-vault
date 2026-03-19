@@ -26,6 +26,35 @@ export async function createSession(data: {
   return result;
 }
 
+export async function getOrCreateIndividualSession(): Promise<DbSession> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Authenticated user required");
+
+  // Look for a session named "Individual Entries"
+  const { data: existing, error: searchError } = await supabase
+    .from("sessions")
+    .select("*")
+    .eq("user_id", user.id)
+    .eq("name", "Individual Entries")
+    .maybeSingle();
+
+  if (existing) return existing;
+
+  // Create it if not exists
+  const { data: result, error: createError } = await supabase
+    .from("sessions")
+    .insert({
+      user_id: user.id,
+      name: "Individual Entries",
+      cost_paid: 0,
+    })
+    .select()
+    .single();
+
+  if (createError) throw createError;
+  return result;
+}
+
 export async function getAllSessions(): Promise<DbSession[]> {
   const { data, error } = await supabase
     .from("sessions")

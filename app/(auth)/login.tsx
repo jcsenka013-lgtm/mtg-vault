@@ -21,6 +21,7 @@ const ALLOWED_USERS = [
   { name: "Richard", email: "richard@cole.tech" },
   { name: "Garrett", email: "garrett@cole.tech" },
   { name: "Brian", email: "brian@cole.tech" },
+  { name: "Geoff", email: "geoff@cole.tech" },
   { name: "Guest", email: "guest@cole.tech" },
 ];
 

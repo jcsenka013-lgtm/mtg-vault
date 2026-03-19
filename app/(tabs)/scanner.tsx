@@ -285,12 +285,12 @@ export default function ScannerScreen() {
               style={styles.manualBtn}
               onPress={() =>
                 router.push({
-                  pathname: "/confirm",
-                  params: { manual: "true", sessionId: activeSession?.id ?? "" },
+                  pathname: "/manual-entry",
+                  params: { sessionId: activeSession?.id ?? "" },
                 })
               }
             >
-              <Text style={styles.manualBtnText}>🔤 Search Manually</Text>
+              <Text style={styles.manualBtnText}>✏️ Manual Entry</Text>
             </Pressable>
           </View>
         </View>

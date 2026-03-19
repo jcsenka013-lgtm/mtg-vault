@@ -3,9 +3,9 @@ import {
   View, Text, ScrollView, Pressable, TextInput,
   StyleSheet, Alert, Switch, ActivityIndicator,
 } from "react-native";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useAppStore } from "@store/appStore";
-import { addCard } from "@db/queries";
+import { addCard, getOrCreateIndividualSession } from "@db/queries";
 import { searchCardByName, autocompleteCardName, getCardPrints, getCardBySetAndNumber } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
 import * as Haptics from "expo-haptics";
@@ -169,6 +169,10 @@ function CardPreview({
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 export default function ManualEntryScreen() {
   const { activeSession } = useAppStore();
+  const params = useLocalSearchParams<{ sessionId?: string }>();
+  
+  // Use session from params if provided, otherwise from store
+  const targetSessionId = params.sessionId || activeSession?.id;
 
   const [name, setName] = useState("");
   const [colors, setColors] = useState<ColorKey[]>([]);
@@ -324,15 +328,19 @@ export default function ManualEntryScreen() {
       Alert.alert("Name required", "Please give your card a name.");
       return;
     }
-    if (!activeSession) {
-      Alert.alert("No active opening", "Please select or create an opening first.");
-      return;
-    }
     const parsedPrice = parseFloat(price) || null;
     setSaving(true);
     try {
+      let finalSessionId = targetSessionId;
+      
+      // If no session is active or passed, use/create the "Individual Entries" session
+      if (!finalSessionId) {
+        const indvSession = await getOrCreateIndividualSession();
+        finalSessionId = indvSession.id;
+      }
+      
       await addCard({
-        sessionId: activeSession.id,
+        sessionId: finalSessionId,
         scryfallId: scryfallCard?.id ?? uuidv4(),
         name: name.trim(),
         setCode: setCode.trim().toUpperCase() || "???",

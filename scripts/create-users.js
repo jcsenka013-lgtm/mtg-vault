@@ -29,6 +29,7 @@ const users = [
   { email: "richard@cole.tech", password: "planeswalker123", name: "Richard" },
   { email: "garrett@cole.tech", password: "planeswalker123", name: "Garrett" },
   { email: "brian@cole.tech", password: "planeswalker123", name: "Brian" },
+  { email: "geoff@cole.tech", password: "planeswalker123", name: "Geoff" },
   { email: "guest@cole.tech", password: "planeswalker123", name: "Guest" }
 ];
 

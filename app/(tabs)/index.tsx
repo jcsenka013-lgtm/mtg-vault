@@ -105,9 +105,14 @@ export default function DashboardScreen() {
       {/* Opening Picker */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Current Opening</Text>
-        <Pressable style={styles.newButton} onPress={() => router.push("/session/new")}>
-          <Text style={styles.newButtonText}>⚔️ New Opening</Text>
-        </Pressable>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <Pressable style={styles.newButton} onPress={() => router.push("/manual-entry")}>
+            <Text style={styles.newButtonText}>✏️ Individual Entry</Text>
+          </Pressable>
+          <Pressable style={styles.newButton} onPress={() => router.push("/session/new")}>
+            <Text style={styles.newButtonText}>⚔️ New Opening</Text>
+          </Pressable>
+        </View>
       </View>
 
       {sessions.length === 0 ? (
