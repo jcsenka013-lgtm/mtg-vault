@@ -1,14 +1,14 @@
 {
   "expo": {
-    "name": "MTG Scanner",
+    "name": "The Vault",
     "slug": "mtg-scanner",
     "version": "1.0.0",
     "scheme": "mtgscanner",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/vault-icon.png",
     "userInterfaceStyle": "dark",
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./assets/vault-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#0a0a0f"
     },
@@ -23,9 +23,9 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#0a0a0f",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "foregroundImage": "./assets/vault-icon.png",
+        "backgroundImage": "./assets/vault-icon.png",
+        "monochromeImage": "./assets/vault-icon.png"
       },
       "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE"],
       "package": "com.mtgscanner.app",
@@ -34,8 +34,9 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/favicon.png",
-      "name": "MTG Scanner",
+      "favicon": "./assets/vault-icon.png",
+      "name": "The Vault",
+      "shortName": "The Vault",
       "description": "Scan and track your Magic: The Gathering card collection",
       "backgroundColor": "#0a0a0f",
       "themeColor": "#c89b3c"
