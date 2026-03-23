@@ -26,7 +26,7 @@ const CARD_WIDTH = SCREEN_WIDTH * 0.75;
 const CARD_HEIGHT = CARD_WIDTH / CARD_RATIO;
 const TITLE_HEIGHT = CARD_HEIGHT * 0.15;
 
-import { searchCardByNameInSet, fetchMtgSets, normalizeScryfallCard } from "@api/scryfall";
+import { searchCardByNameInSet, fetchMtgSets, normalizeScryfallCard, getCardBySetAndNumber } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
 import type { ScryfallSet } from "@api/scryfall";
 import { bulkAddCards } from "@db/queries";
@@ -60,8 +60,18 @@ function extractCardInfo(text: string): { name: string; collectorNumber?: string
   const nameLine = cleanedLines.find(
     (l) => l.length >= 2 && /[a-zA-Z]/.test(l) && !/^\d+$/.test(l)
   );
-  if (!nameLine) return null;
-  return { name: nameLine, collectorNumber: undefined };
+
+  let collectorNumber: string | undefined;
+  for (const line of lines) {
+    const match = line.match(COLLECTOR_PATTERN);
+    if (match) {
+      collectorNumber = match[1];
+      break;
+    }
+  }
+
+  if (!nameLine && !collectorNumber) return null;
+  return { name: nameLine || "", collectorNumber };
 }
 
 function getSmallImageUri(card: ScryfallCard): string | null {
@@ -259,14 +269,28 @@ export default function ScannerScreen() {
       if (!info) return;
 
       // Sanitize: strip non-alphanumeric chars before searching
-      const sanitizedName = sanitizeOcrText(info.name);
-      if (!sanitizedName || sanitizedName === lastScanned) return;
+      let sanitizedName = info.name ? sanitizeOcrText(info.name) : "";
+      if (!sanitizedName && !info.collectorNumber) return;
+      
+      const scanKey = info.collectorNumber ? `${sanitizedName}-${info.collectorNumber}` : sanitizedName;
+      if (scanKey === lastScanned) return;
 
       cooldownRef.current = true;
-      setLastScanned(sanitizedName);
+      setLastScanned(scanKey);
 
       try {
-        const results = await searchCardByNameInSet(sanitizedName, selectedSet.code);
+        let results: ScryfallCard[] = [];
+
+        // 1. Try exact match by collector number if found
+        if (info.collectorNumber) {
+          const exactCard = await getCardBySetAndNumber(selectedSet.code, info.collectorNumber);
+          if (exactCard) results = [exactCard];
+        }
+
+        // 2. Fallback to name search
+        if (results.length === 0 && sanitizedName) {
+          results = await searchCardByNameInSet(sanitizedName, selectedSet.code);
+        }
 
         if (scanMode === "rapid") {
           if (results.length === 0) {
@@ -421,13 +445,22 @@ export default function ScannerScreen() {
           const vH = video.videoHeight;
           const scale = Math.min(vW / SCREEN_WIDTH, vH / SCREEN_HEIGHT);
           const cropW = CARD_WIDTH * scale;
-          const cropH = TITLE_HEIGHT * scale;
+          const cardHCanvas = CARD_HEIGHT * scale;
+          const topCropH = cardHCanvas * 0.15;
+          const botCropH = cardHCanvas * 0.12;
+
           const sx = (vW - cropW) / 2;
-          const sy = (vH - (CARD_HEIGHT * scale)) / 2;
+          const sy = (vH - cardHCanvas) / 2;
+
           canvas.width = cropW;
-          canvas.height = cropH;
+          canvas.height = topCropH + botCropH;
           const ctx = canvas.getContext("2d");
-          ctx?.drawImage(video, sx, sy, cropW, cropH, 0, 0, cropW, cropH);
+
+          // Draw top (Card Name)
+          ctx?.drawImage(video, sx, sy, cropW, topCropH, 0, 0, cropW, topCropH);
+          // Draw bottom (Collector Info)
+          ctx?.drawImage(video, sx, sy + cardHCanvas - botCropH, cropW, botCropH, 0, topCropH, cropW, botCropH);
+
           const base64Data = canvas.toDataURL("image/jpeg", 0.9);
           console.log("Starting Web OCR analysis on Cropped Image...");
           const worker = await Tesseract.createWorker("eng");
@@ -448,12 +481,11 @@ export default function ScannerScreen() {
             console.log("Starting Native OCR analysis on Cropped Image...");
             const cropW = photo.width * 0.75;
             const cardH = cropW / CARD_RATIO;
-            const cropH = cardH * 0.15;
             const originX = (photo.width - cropW) / 2;
             const originY = (photo.height - cardH) / 2;
             const cropped = await ImageManipulator.manipulateAsync(
               photo.uri,
-              [{ crop: { originX, originY, width: cropW, height: cropH } }],
+              [{ crop: { originX, originY, width: cropW, height: cardH } }],
               { base64: true, format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
             );
             const worker = await Tesseract.createWorker("eng");
@@ -703,7 +735,12 @@ export default function ScannerScreen() {
           <View style={styles.overlayRow}>
             <View style={styles.overlayDim} />
             <View style={styles.cardFrame}>
-              <View style={styles.titleFrame} />
+              <View style={styles.targetBoxTop}>
+                <Text style={styles.targetLabel}>Card Name</Text>
+              </View>
+              <View style={styles.targetBoxBottom}>
+                <Text style={styles.targetLabel}>Collector #</Text>
+              </View>
             </View>
             <View style={styles.overlayDim} />
           </View>
@@ -1030,8 +1067,10 @@ const styles = StyleSheet.create({
   overlayContainer: { ...StyleSheet.absoluteFillObject, zIndex: 10 },
   overlayDim: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)" },
   overlayRow: { flexDirection: "row", height: CARD_HEIGHT },
-  cardFrame: { width: CARD_WIDTH, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 12 },
-  titleFrame: { height: "15%", borderBottomWidth: 1, borderColor: "rgba(255,255,255,0.5)", borderStyle: "dashed" },
+  cardFrame: { width: CARD_WIDTH, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 12, justifyContent: "space-between" },
+  targetBoxTop: { height: "15%", borderBottomWidth: 1, borderColor: "rgba(255,255,255,0.5)", borderStyle: "dashed", padding: 6 },
+  targetBoxBottom: { height: "12%", borderTopWidth: 1, borderColor: "rgba(255,255,255,0.5)", borderStyle: "dashed", padding: 6, justifyContent: "flex-end" },
+  targetLabel: { color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
   frameHelper: { color: "#f0f0f8", fontSize: 13, fontWeight: "700", textAlign: "center", paddingHorizontal: 20 },
   frameHelperSub: { color: ACCENT, fontSize: 13, fontWeight: "800", textAlign: "center", marginTop: 4 },
 
