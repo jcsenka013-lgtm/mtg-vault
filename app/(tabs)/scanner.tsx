@@ -22,7 +22,7 @@ import { useAppStore } from "@store/appStore";
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get("window");
 const CARD_RATIO = 63 / 88;
-const CARD_WIDTH = SCREEN_WIDTH * 0.75;
+const CARD_WIDTH = Math.min(SCREEN_WIDTH * 0.85, 450);
 const CARD_HEIGHT = CARD_WIDTH / CARD_RATIO;
 const TITLE_HEIGHT = CARD_HEIGHT * 0.15;
 
@@ -220,7 +220,7 @@ export default function ScannerScreen() {
   useEffect(() => {
     let activeStream: MediaStream | null = null;
 
-    if (Platform.OS === "web" && webPermissionGranted && scanning) {
+    if (Platform.OS === "web" && webPermissionGranted && scanning && selectedSet) {
       navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: "environment",
@@ -254,7 +254,7 @@ export default function ScannerScreen() {
         }
       }
     };
-  }, [webPermissionGranted, scanning]);
+  }, [webPermissionGranted, scanning, selectedSet]);
 
   const handleOcrResult = useCallback(
     async (recognizedText: string) => {
