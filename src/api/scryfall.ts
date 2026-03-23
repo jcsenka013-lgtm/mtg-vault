@@ -117,6 +117,50 @@ export function extractImageUri(card: ScryfallCard): string | null {
   return null;
 }
 
+export interface ScryfallSet {
+  code: string;
+  name: string;
+  set_type: string;
+  released_at: string;
+  card_count: number;
+}
+
+const RELEVANT_SET_TYPES = new Set([
+  "core", "expansion", "masters", "commander", "draft_innovation",
+  "starter", "box", "duel_deck", "from_the_vault", "spellbook", "masterpiece",
+]);
+
+/**
+ * Fetch all MTG sets from Scryfall, filtered to relevant set types.
+ */
+export async function fetchMtgSets(): Promise<ScryfallSet[]> {
+  try {
+    const result = await rateLimitedGet<{ object: string; data: ScryfallSet[] }>("/sets");
+    return result.data
+      .filter((s) => RELEVANT_SET_TYPES.has(s.set_type))
+      .sort((a, b) => (b.released_at ?? "").localeCompare(a.released_at ?? ""));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Search cards by name constrained to a specific set.
+ * Returns up to 5 results. Returns empty array if no match in set.
+ */
+export async function searchCardByNameInSet(name: string, setCode: string): Promise<ScryfallCard[]> {
+  try {
+    const results = await rateLimitedGet<ScryfallSearchResponse>("/cards/search", {
+      q: `${name} set:${setCode}`,
+      order: "name",
+      unique: "cards",
+    });
+    return results.data.slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Parse a ScryfallCard into our app's normalized format.
  */

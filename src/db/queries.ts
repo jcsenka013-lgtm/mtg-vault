@@ -132,6 +132,46 @@ export async function addCard(data: {
   return result;
 }
 
+export async function bulkAddCards(cards: Array<{
+  sessionId: string;
+  scryfallId: string;
+  name: string;
+  setCode: string;
+  setName: string;
+  collectorNumber: string;
+  rarity: "common" | "uncommon" | "rare" | "mythic";
+  colors: string[];
+  isFoil: boolean;
+  condition: "NM" | "LP" | "MP" | "HP" | "DMG";
+  quantity?: number;
+  priceUsd: number | null;
+  priceUsdFoil: number | null;
+  imageUri: string | null;
+  scryfallUri: string | null;
+}>): Promise<void> {
+  if (cards.length === 0) return;
+  const rows = cards.map((data) => ({
+    session_id: data.sessionId,
+    scryfall_id: data.scryfallId,
+    name: data.name,
+    set_code: data.setCode,
+    set_name: data.setName,
+    collector_number: data.collectorNumber,
+    rarity: data.rarity,
+    colors: data.colors,
+    is_foil: data.isFoil,
+    condition: data.condition,
+    quantity: data.quantity ?? 1,
+    price_usd: data.priceUsd,
+    price_usd_foil: data.priceUsdFoil,
+    price_fetched_at: new Date().toISOString(),
+    image_uri: data.imageUri,
+    scryfall_uri: data.scryfallUri,
+  }));
+  const { error } = await supabase.from("cards").insert(rows);
+  if (error) throw error;
+}
+
 export async function getCardsForSession(
   sessionId: string,
   opts?: {
