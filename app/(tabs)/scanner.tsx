@@ -253,6 +253,9 @@ export default function ScannerScreen() {
   const [setsLoading, setSetsLoading] = useState(false);
   const [setPickerOpen, setSetPickerOpen] = useState(false);
   const [setFilter, setSetFilter] = useState("");
+  const [recentSetCodes, setRecentSetCodes] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("recentSets") ?? "[]"); } catch { return []; }
+  });
 
   // Single-mode result picker modal
   const [resultModalVisible, setResultModalVisible] = useState(false);
@@ -974,6 +977,11 @@ export default function ScannerScreen() {
       )
     : setList;
 
+  // Recently used sets (resolved to full objects), shown above all others when no filter active
+  const recentSets = recentSetCodes
+    .map(code => setList.find(s => s.code === code))
+    .filter((s): s is ScryfallSet => !!s);
+
   const queueTotalValue = rapidQueue.reduce((sum, c) => sum + (c.priceUsd ?? 0), 0);
 
   const isNativePermGranted = permission?.granted;
@@ -1056,6 +1064,34 @@ export default function ScannerScreen() {
           <Text style={styles.gateEmpty}>No sets found.</Text>
         ) : (
           <ScrollView style={styles.gateList} keyboardShouldPersistTaps="handled">
+            {/* Recently used — only shown when no active search filter */}
+            {!setFilter.trim() && recentSets.length > 0 && (
+              <>
+                <Text style={styles.gateSection}>Recently Used</Text>
+                {recentSets.map(s => (
+                  <Pressable
+                    key={`recent-${s.code}`}
+                    style={[styles.gateItem, styles.gateItemRecent]}
+                    onPress={() => {
+                      setSelectedSet({ code: s.code, name: s.name });
+                      setSetFilter("");
+                      const next = [s.code, ...recentSetCodes.filter(c => c !== s.code)].slice(0, 3);
+                      setRecentSetCodes(next);
+                      try { localStorage.setItem("recentSets", JSON.stringify(next)); } catch {}
+                    }}
+                  >
+                    <View style={styles.gateItemLeft}>
+                      <Text style={styles.gateItemName}>{s.name}</Text>
+                      <Text style={styles.gateItemMeta}>
+                        {s.code.toUpperCase()} · {s.card_count} cards · {s.released_at?.slice(0, 4)}
+                      </Text>
+                    </View>
+                    <Text style={styles.gateItemArrow}>→</Text>
+                  </Pressable>
+                ))}
+                <Text style={styles.gateSection}>All Sets</Text>
+              </>
+            )}
             {filteredSets.map(s => (
               <Pressable
                 key={s.code}
@@ -1063,6 +1099,9 @@ export default function ScannerScreen() {
                 onPress={() => {
                   setSelectedSet({ code: s.code, name: s.name });
                   setSetFilter("");
+                  const next = [s.code, ...recentSetCodes.filter(c => c !== s.code)].slice(0, 3);
+                  setRecentSetCodes(next);
+                  try { localStorage.setItem("recentSets", JSON.stringify(next)); } catch {}
                 }}
               >
                 <View style={styles.gateItemLeft}>
@@ -1786,6 +1825,8 @@ const styles = StyleSheet.create({
   gateItemName: { color: "#f0f0f8", fontSize: 16, fontWeight: "700", marginBottom: 2 },
   gateItemMeta: { color: "#606078", fontSize: 12 },
   gateItemArrow: { color: ACCENT, fontSize: 18, fontWeight: "700", paddingLeft: 12 },
+  gateItemRecent: { backgroundColor: "rgba(200,155,60,0.06)", borderLeftWidth: 3, borderLeftColor: ACCENT },
+  gateSection: { color: "#606078", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1.2, paddingHorizontal: 20, paddingVertical: 10, backgroundColor: "#0d0d16" },
 
   // Active set chip (inside scanner, above session badge)
   setChip: { flexDirection: "row", alignSelf: "center", alignItems: "center", gap: 8, backgroundColor: "rgba(200,155,60,0.12)", borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 1, borderColor: ACCENT, zIndex: 10, maxWidth: "90%" },
