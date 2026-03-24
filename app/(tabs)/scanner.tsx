@@ -1693,18 +1693,18 @@ const styles = StyleSheet.create({
   permButtonText: { color: "#0a0a0f", fontWeight: "800", fontSize: 16 },
 
   // Top bar
-  topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 16, paddingTop: 56, paddingBottom: 10, backgroundColor: "rgba(10,10,15,0.7)", zIndex: 10 },
-  topBarTitle: { color: "#f0f0f8", fontSize: 18, fontWeight: "800" },
+  topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 16, paddingTop: isWeb ? 10 : 56, paddingBottom: 10, backgroundColor: "rgba(10,10,15,0.85)", zIndex: 10 },
+  topBarTitle: { color: "#ffffff", fontSize: 18, fontWeight: "800", textShadowColor: "rgba(0,0,0,0.8)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
   topBarRight: { flexDirection: "row", alignItems: "center", gap: 8 },
   flashBtn: { backgroundColor: "rgba(200,155,60,0.2)", borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: ACCENT },
   flashText: { color: ACCENT, fontWeight: "700", fontSize: 12 },
 
   // Mode toggle
-  modeToggle: { flexDirection: "row", backgroundColor: "#12121a", borderRadius: 20, padding: 3, borderWidth: 1, borderColor: "#222233" },
-  modeBtn: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 17 },
+  modeToggle: { flexDirection: "row", backgroundColor: "rgba(10,10,20,0.9)", borderRadius: 22, padding: 4, borderWidth: 1, borderColor: "#333348" },
+  modeBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 18 },
   modeBtnActive: { backgroundColor: ACCENT },
   modeBtnRapid: { backgroundColor: RAPID },
-  modeBtnText: { color: "#a0a0b8", fontWeight: "700", fontSize: 12 },
+  modeBtnText: { color: "#c0c0d8", fontWeight: "700", fontSize: 14 },
   modeBtnTextActive: { color: "#0a0a0f" },
   modeBtnTextRapid: { color: "#fff" },
 
