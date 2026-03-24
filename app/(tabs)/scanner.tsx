@@ -159,8 +159,8 @@ interface ReviewNeededItem {
 }
 
 function extractCardInfo(text: string): { name: string; collectorNumber?: string } | null {
-  // Clean common OCR noise: pipes, colons, semi-colons, brackets, and leading/trailing junk
-  const cleanedText = text.replace(/[|:;\[\]]/g, " ").replace(/\s\s+/g, " ").trim();
+  // Strip all non-letter characters except spaces, hyphens, apostrophes (mana symbols, pipes, tildes, etc.)
+  const cleanedText = text.replace(/[^a-zA-Z\s'\-]/g, " ").replace(/\s\s+/g, " ").trim();
   const lines = cleanedText.split("\n").map((l) => l.trim()).filter((l) => l.length > 2);
   
   if (lines.length === 0) return null;
@@ -269,8 +269,11 @@ export default function ScannerScreen() {
     const setup = async () => {
       try {
         const worker = await Tesseract.createWorker("eng");
-        // PSM 7 = treat image as a single text line — ideal for card title strips
-        await worker.setParameters({ tessedit_pageseg_mode: "7" });
+        // PSM 7 = single text line. Whitelist prevents symbol noise ({~|-) from card frame icons.
+        await worker.setParameters({
+          tessedit_pageseg_mode: "7",
+          tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz '-,",
+        });
         if (active) workerRef.current = worker;
       } catch (err) {
         console.error("Worker init failed:", err);
@@ -677,15 +680,22 @@ export default function ScannerScreen() {
             const sw = rectG.width * scaleX;
             const sh = rectG.height * scaleY;
 
+            // Inset horizontally to skip decorative card frame icons on left (~12%) and
+            // element-cost circles on right (~18%) that pollute OCR with symbol noise.
+            const insetL = sw * 0.12;
+            const insetR = sw * 0.18;
+            const ocrSx = sx + insetL;
+            const ocrSw = sw - insetL - insetR;
+
             // 2x upscale before OCR — Tesseract accuracy improves significantly on larger images
             const OCR_SCALE = 2;
-            canvas.width = sw * OCR_SCALE;
+            canvas.width = ocrSw * OCR_SCALE;
             canvas.height = sh * OCR_SCALE;
             const ctx = canvas.getContext("2d");
             if (ctx) {
               ctx.imageSmoothingEnabled = true;
               ctx.imageSmoothingQuality = "high";
-              ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+              ctx.drawImage(video, ocrSx, sy, ocrSw, sh, 0, 0, canvas.width, canvas.height);
 
               // Grayscale + high-contrast pass to help Tesseract read stylized card fonts
               const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -756,9 +766,14 @@ export default function ScannerScreen() {
               offsetY = (photo.height - SCREEN_HEIGHT * scale) / 2;
             }
 
-            const originX = Math.max(0, Math.round(guideScreenX * scale + offsetX));
+            // Inset left 12% and right 18% to skip decorative card icons and element circles
+            const rawOriginX = Math.round(guideScreenX * scale + offsetX);
+            const rawCropW   = Math.round(CARD_WIDTH * scale);
+            const insetLpx   = Math.round(rawCropW * 0.12);
+            const insetRpx   = Math.round(rawCropW * 0.18);
+            const originX = Math.max(0, rawOriginX + insetLpx);
             const originY = Math.max(0, Math.round(guideScreenY * scale + offsetY));
-            const cropW   = Math.min(Math.round(CARD_WIDTH   * scale), photo.width  - originX);
+            const cropW   = Math.min(rawCropW - insetLpx - insetRpx, photo.width - originX);
             const cropH   = Math.min(Math.round(TITLE_HEIGHT * scale), photo.height - originY);
 
             const cropped = await ImageManipulator.manipulateAsync(
