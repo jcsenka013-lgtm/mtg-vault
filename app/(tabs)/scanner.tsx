@@ -274,7 +274,7 @@ export default function ScannerScreen() {
         const worker = await Tesseract.createWorker("eng");
         // PSM 7 = single text line. Whitelist prevents symbol noise ({~|-) from card frame icons.
         await worker.setParameters({
-          tessedit_pageseg_mode: "7",
+          tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE,
           tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz '-,",
         });
         if (active) workerRef.current = worker;
