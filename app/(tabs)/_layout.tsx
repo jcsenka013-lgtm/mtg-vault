@@ -59,6 +59,15 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="binder"
+        options={{
+          title: "Binder",
+          headerTitle: "📖 Binder Scan",
+          headerShown: false,
+          tabBarIcon: ({ focused }) => <TabIcon emoji="📖" focused={focused} />,
+        }}
+      />
+      <Tabs.Screen
         name="export"
         options={{
           title: "Share",
