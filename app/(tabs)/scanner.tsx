@@ -28,7 +28,7 @@ const TITLE_HEIGHT = CARD_HEIGHT * 0.15;
 // Platform constant — safe at module level; never changes at runtime
 const isWeb = Platform.OS === "web";
 
-import { searchCardByNameInSet, fetchMtgSets, normalizeScryfallCard, getCardBySetAndNumber, fetchCardsBySet } from "@api/scryfall";
+import { searchCardByNameInSet, fetchMtgSets, normalizeScryfallCard, getCardBySetAndNumber, fetchCardsBySet, autocompleteCardName } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
 import type { ScryfallSet } from "@api/scryfall";
 import { bulkAddCards } from "@db/queries";
@@ -159,8 +159,10 @@ interface ReviewNeededItem {
 }
 
 function extractCardInfo(text: string): { name: string; collectorNumber?: string } | null {
-  // Strip all non-letter characters except spaces, hyphens, apostrophes (mana symbols, pipes, tildes, etc.)
-  const cleanedText = text.replace(/[^a-zA-Z\s'\-]/g, " ").replace(/\s\s+/g, " ").trim();
+  // Collapse newlines to spaces first — PSM.SINGLE_LINE still emits \n between words sometimes
+  const collapsed = text.replace(/\n+/g, " ");
+  // Strip all non-letter characters except spaces, hyphens, apostrophes
+  const cleanedText = collapsed.replace(/[^a-zA-Z\s'\-]/g, " ").replace(/\s\s+/g, " ").trim();
   const lines = cleanedText.split("\n").map((l) => l.trim()).filter((l) => l.length > 2);
   
   if (lines.length === 0) return null;
@@ -502,12 +504,25 @@ export default function ScannerScreen() {
             }
           }
 
-          // B. If no local high-confidence winner, hit Scryfall
+          // B. Use Scryfall autocomplete as a spell-checker for the OCR name,
+          //    then search the corrected name in the set.
+          if (results.length === 0) {
+            try {
+              const suggestions = await autocompleteCardName(sanitizedName);
+              const corrected = suggestions[0];
+              if (corrected && corrected.toLowerCase() !== sanitizedName.toLowerCase()) {
+                console.log("Autocomplete correction:", sanitizedName, "→", corrected);
+                results = await searchCardByNameInSet(corrected, selectedSet.code);
+              }
+            } catch { /* non-fatal */ }
+          }
+
+          // C. Direct Scryfall search with the original sanitized name
           if (results.length === 0) {
             results = await searchCardByNameInSet(sanitizedName, selectedSet.code);
           }
 
-          // C. If Scryfall also returned nothing, surface local candidates so the
+          // D. If Scryfall also returned nothing, surface local candidates so the
           //    user can still pick the right card rather than seeing "No match"
           if (results.length === 0 && localMatches.length > 0) {
             console.log("Falling back to local candidates:", localMatches.map(m => m.card.name));
