@@ -59,21 +59,23 @@ export default function DashboardScreen() {
   useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
 
   const handleDeleteSession = async (id: string, name: string) => {
-    Alert.alert(
-      "Delete Opening",
-      `Delete "${name}"? This will remove all cards in this opening.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete", style: "destructive",
-          onPress: async () => {
-            await deleteSession(id);
-            if (activeSession?.id === id) setActiveSession(null);
-            loadData();
-          },
-        },
-      ]
-    );
+    const confirmed =
+      typeof window !== "undefined"
+        ? window.confirm(`Delete "${name}"? This will remove all cards in this opening.`)
+        : await new Promise<boolean>(resolve =>
+            Alert.alert(
+              "Delete Opening",
+              `Delete "${name}"? This will remove all cards in this opening.`,
+              [
+                { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+                { text: "Delete", style: "destructive", onPress: () => resolve(true) },
+              ]
+            )
+          );
+    if (!confirmed) return;
+    await deleteSession(id);
+    if (activeSession?.id === id) setActiveSession(null);
+    loadData();
   };
 
   const handleCostUpdate = async () => {
