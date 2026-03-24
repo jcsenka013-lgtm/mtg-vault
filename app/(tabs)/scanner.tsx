@@ -220,11 +220,22 @@ function levenshteinDistance(a: string, b: string): number {
 }
 
 function stringSimilarity(a: string, b: string): number {
-  const aL = a.toLowerCase();
-  const bL = b.toLowerCase();
+  const aL = a.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  const bL = b.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+  // Levenshtein over the longer string
   const dist = levenshteinDistance(aL, bL);
   const maxLen = Math.max(aL.length, bL.length);
-  return maxLen === 0 ? 1 : 1 - dist / maxLen;
+  const levScore = maxLen === 0 ? 1 : 1 - dist / maxLen;
+
+  // Prefix boost: OCR often reads a truncated version of a long name.
+  // If every word in the OCR text appears as a prefix-sequence in the card name, score higher.
+  const aWords = aL.split(" ").filter(Boolean);
+  const bWords = bL.split(" ").filter(Boolean);
+  const prefixMatchCount = aWords.filter((w, i) => bWords[i]?.startsWith(w) || bWords[i] === w).length;
+  const prefixScore = aWords.length > 0 ? prefixMatchCount / Math.max(aWords.length, bWords.length) : 0;
+
+  return Math.max(levScore, prefixScore);
 }
 
 export default function ScannerScreen() {
@@ -477,21 +488,30 @@ export default function ScannerScreen() {
         // 1. Try name search FIRST (as requested)
         if (sanitizedName) {
           // A. Try LOCAL fuzzy match first for speed & resilience
+          let localMatches: { card: ScryfallCard; score: number }[] = [];
           if (setCards.length > 0) {
-            const matches = setCards
+            localMatches = setCards
               .map(c => ({ card: c, score: stringSimilarity(sanitizedName, c.name) }))
-              .filter(m => m.score > 0.6)
-              .sort((a, b) => b.score - a.score);
-            
-            if (matches.length > 0 && matches[0].score > 0.85) {
-              console.log("Local Fuzzy WIN:", matches[0].card.name, "score:", matches[0].score);
-              results = [matches[0].card];
+              .filter(m => m.score > 0.4)
+              .sort((a, b) => b.score - a.score)
+              .slice(0, 8);
+
+            if (localMatches.length > 0 && localMatches[0].score > 0.85) {
+              console.log("Local Fuzzy WIN:", localMatches[0].card.name, "score:", localMatches[0].score);
+              results = [localMatches[0].card];
             }
           }
 
           // B. If no local high-confidence winner, hit Scryfall
           if (results.length === 0) {
             results = await searchCardByNameInSet(sanitizedName, selectedSet.code);
+          }
+
+          // C. If Scryfall also returned nothing, surface local candidates so the
+          //    user can still pick the right card rather than seeing "No match"
+          if (results.length === 0 && localMatches.length > 0) {
+            console.log("Falling back to local candidates:", localMatches.map(m => m.card.name));
+            results = localMatches.map(m => m.card);
           }
         }
 
@@ -694,8 +714,8 @@ export default function ScannerScreen() {
 
             // Inset horizontally to skip decorative card frame icons on left (~12%) and
             // element-cost circles on right (~18%) that pollute OCR with symbol noise.
-            const insetL = sw * 0.12;
-            const insetR = sw * 0.18;
+            const insetL = sw * 0.08;
+            const insetR = sw * 0.10;
             const ocrSx = sx + insetL;
             const ocrSw = sw - insetL - insetR;
 
@@ -778,11 +798,11 @@ export default function ScannerScreen() {
               offsetY = (photo.height - SCREEN_HEIGHT * scale) / 2;
             }
 
-            // Inset left 12% and right 18% to skip decorative card icons and element circles
+            // Inset left 8% and right 10% to skip decorative card icons and element circles
             const rawOriginX = Math.round(guideScreenX * scale + offsetX);
             const rawCropW   = Math.round(CARD_WIDTH * scale);
-            const insetLpx   = Math.round(rawCropW * 0.12);
-            const insetRpx   = Math.round(rawCropW * 0.18);
+            const insetLpx   = Math.round(rawCropW * 0.08);
+            const insetRpx   = Math.round(rawCropW * 0.10);
             const originX = Math.max(0, rawOriginX + insetLpx);
             const originY = Math.max(0, Math.round(guideScreenY * scale + offsetY));
             const cropW   = Math.min(rawCropW - insetLpx - insetRpx, photo.width - originX);
