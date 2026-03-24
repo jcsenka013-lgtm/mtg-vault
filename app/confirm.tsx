@@ -144,7 +144,12 @@ export default function ConfirmScreen() {
         scryfallUri: normalized.scryfallUri,
       });
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.back();
+      // Use replace to avoid stacking confirmation screens; takes user back to scanner
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace("/(tabs)/scanner");
+      }
     } catch (e) {
       Alert.alert("Error", "Failed to save card. Please try again.");
       console.error(e);

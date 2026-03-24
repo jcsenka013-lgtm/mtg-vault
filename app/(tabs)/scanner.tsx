@@ -26,7 +26,7 @@ const CARD_WIDTH = Math.min(SCREEN_WIDTH * 0.85, 450);
 const CARD_HEIGHT = CARD_WIDTH / CARD_RATIO;
 const TITLE_HEIGHT = CARD_HEIGHT * 0.15;
 
-import { searchCardByNameInSet, fetchMtgSets, normalizeScryfallCard, getCardBySetAndNumber } from "@api/scryfall";
+import { searchCardByNameInSet, fetchMtgSets, normalizeScryfallCard, getCardBySetAndNumber, fetchCardsBySet } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
 import type { ScryfallSet } from "@api/scryfall";
 import { bulkAddCards } from "@db/queries";
@@ -36,6 +36,103 @@ import * as ImageManipulator from "expo-image-manipulator";
 // Regex patterns for OCR text extraction (used for future set code detection)
 const COLLECTOR_PATTERN = /(\d{1,4})\s*\/\s*(\d{1,4})/;
 const SET_CODE_PATTERN = /\b([A-Z]{3,5})\b/g;
+
+// ── Pokemon TCG types ────────────────────────────────────────────────────────
+interface PokemonSet {
+  id: string;
+  name: string;
+  total: number;
+  releaseDate: string;
+}
+
+interface PokemonCard {
+  id: string;
+  name: string;
+  set: { id: string; name: string };
+  number: string;
+  rarity?: string;
+  images: { small: string; large: string };
+  tcgplayer?: {
+    prices?: {
+      normal?: { market?: number };
+      holofoil?: { market?: number };
+      reverseHolofoil?: { market?: number };
+    };
+  };
+}
+
+async function fetchPokemonSets(): Promise<PokemonSet[]> {
+  const res = await fetch("https://api.pokemontcg.io/v2/sets?orderBy=-releaseDate&pageSize=250");
+  const json = await res.json();
+  return (json.data ?? []) as PokemonSet[];
+}
+
+async function searchPokemonCards(name: string, setId: string): Promise<PokemonCard[]> {
+  const q = `name:"${name}" set.id:${setId}`;
+  const res = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q)}`);
+  const json = await res.json();
+  return (json.data ?? []) as PokemonCard[];
+}
+
+function mapPokemonRarity(rarity?: string): "common" | "uncommon" | "rare" | "mythic" {
+  if (!rarity) return "common";
+  const r = rarity.toLowerCase();
+  if (r.includes("ultra rare") || r.includes("secret") || r.includes("rainbow") || r.includes("amazing")) return "mythic";
+  if (r.includes("rare")) return "rare";
+  if (r.includes("uncommon")) return "uncommon";
+  return "common";
+}
+
+function adaptPokemonCard(card: PokemonCard): QueuedCard {
+  const prices = card.tcgplayer?.prices;
+  const priceUsd = prices?.normal?.market ?? null;
+  const priceUsdFoil = prices?.holofoil?.market ?? prices?.reverseHolofoil?.market ?? null;
+  return {
+    localId: `${card.id}-${Date.now()}`,
+    scryfallId: card.id,
+    name: card.name,
+    setCode: card.set.id,
+    setName: card.set.name,
+    collectorNumber: card.number,
+    rarity: mapPokemonRarity(card.rarity),
+    colors: [],
+    thumbUri: card.images?.small ?? null,
+    imageUri: card.images?.large ?? null,
+    scryfallUri: null,
+    priceUsd,
+    priceUsdFoil,
+  };
+}
+
+// ── Unified card display helpers (MTG + Pokemon) ─────────────────────────────
+function getAnyCardThumb(card: any, isPokemon: boolean): string | null {
+  if (isPokemon) return (card as PokemonCard).images?.small ?? null;
+  return getSmallImageUri(card as ScryfallCard);
+}
+
+function getAnyCardMeta(card: any, isPokemon: boolean): string {
+  if (isPokemon) {
+    const c = card as PokemonCard;
+    return `${c.set?.name ?? ""} · #${c.number}`;
+  }
+  const c = card as ScryfallCard;
+  return `${c.mana_cost ? `${c.mana_cost}  ·  ` : ""}${c.set?.toUpperCase?.() ?? ""} #${c.collector_number}`;
+}
+
+function getAnyCardSubLine(card: any, isPokemon: boolean): string {
+  if (isPokemon) return (card as PokemonCard).rarity ?? "";
+  return (card as ScryfallCard).type_line ?? "";
+}
+
+function getAnyCardPrice(card: any, isPokemon: boolean): string | null {
+  if (isPokemon) {
+    const prices = (card as PokemonCard).tcgplayer?.prices;
+    const market = prices?.normal?.market ?? prices?.holofoil?.market ?? prices?.reverseHolofoil?.market;
+    return market != null ? `$${market.toFixed(2)}` : null;
+  }
+  const usd = (card as ScryfallCard).prices?.usd;
+  return usd ? `$${parseFloat(usd).toFixed(2)}` : null;
+}
 
 interface QueuedCard {
   localId: string;
@@ -54,12 +151,11 @@ interface QueuedCard {
 }
 
 function extractCardInfo(text: string): { name: string; collectorNumber?: string } | null {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  // Clean common OCR noise: pipes, colons, semi-colons, brackets, and leading/trailing junk
+  const cleanedText = text.replace(/[|:;\[\]]/g, " ").replace(/\s\s+/g, " ").trim();
+  const lines = cleanedText.split("\n").map((l) => l.trim()).filter((l) => l.length > 2);
+  
   if (lines.length === 0) return null;
-  const cleanedLines = lines.map(l => l.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, ''));
-  const nameLine = cleanedLines.find(
-    (l) => l.length >= 2 && /[a-zA-Z]/.test(l) && !/^\d+$/.test(l)
-  );
 
   let collectorNumber: string | undefined;
   for (const line of lines) {
@@ -70,8 +166,22 @@ function extractCardInfo(text: string): { name: string; collectorNumber?: string
     }
   }
 
-  if (!nameLine && !collectorNumber) return null;
-  return { name: nameLine || "", collectorNumber };
+  // Find the likely card name
+  // Strategy: The first line that is mostly letters and not metadata
+  const nameLine = lines.find(line => 
+    !COLLECTOR_PATTERN.test(line) && 
+    /[a-zA-Z]{3,}/.test(line) &&
+    !SET_CODE_PATTERN.test(line)
+  );
+
+  const finalName = nameLine || lines[0];
+
+  // Final cleanup of the name to remove stray mana symbols or weird characters
+  // Leave spaces, hyphens and apostrophes (e.g. "Sage's Nouliths")
+  return { 
+    name: finalName ? finalName.replace(/[^a-zA-Z\s'-]/g, "").trim() : "", 
+    collectorNumber 
+  };
 }
 
 function getSmallImageUri(card: ScryfallCard): string | null {
@@ -117,8 +227,9 @@ export default function ScannerScreen() {
   const [isSecureContext, setIsSecureContext] = useState(true);
   const [webChecking, setWebChecking] = useState(Platform.OS === "web");
 
-  const { activeSession, setPendingCard } = useAppStore();
+  const { activeSession, setPendingCard, isPokemonUser, setIsPokemonUser } = useAppStore();
   const [scanning, setScanning] = useState(false);
+  const isMounted = useRef(true);
   const [lastScanned, setLastScanned] = useState<string | null>(null);
   const [flash, setFlash] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -130,6 +241,7 @@ export default function ScannerScreen() {
   // Set selection
   const [selectedSet, setSelectedSet] = useState<{ code: string; name: string } | null>(null);
   const [setList, setSetList] = useState<ScryfallSet[]>([]);
+  const [pokemonSetList, setPokemonSetList] = useState<PokemonSet[]>([]);
   const [setsLoading, setSetsLoading] = useState(false);
   const [setPickerOpen, setSetPickerOpen] = useState(false);
   const [setFilter, setSetFilter] = useState("");
@@ -137,11 +249,39 @@ export default function ScannerScreen() {
   // Single-mode result picker modal
   const [resultModalVisible, setResultModalVisible] = useState(false);
   const [resultCandidates, setResultCandidates] = useState<ScryfallCard[]>([]);
+  const [noTextCount, setNoTextCount] = useState(0);
+  const [debugImage, setDebugImage] = useState<string | null>(null);
+  const [setCards, setSetCards] = useState<ScryfallCard[]>([]);
+
+  const workerRef = useRef<any>(null);
+
+  // Initialize OCR worker once
+  useEffect(() => {
+    let active = true;
+    const setup = async () => {
+      try {
+        const worker = await Tesseract.createWorker("eng");
+        if (active) workerRef.current = worker;
+      } catch (err) {
+        console.error("Worker init failed:", err);
+      }
+    };
+    setup();
+    return () => {
+      active = false;
+      isMounted.current = false;
+      workerRef.current?.terminate();
+    };
+  }, []);
 
   // Rapid mode queue
   const [rapidQueue, setRapidQueue] = useState<QueuedCard[]>([]);
   const [queueExpanded, setQueueExpanded] = useState(true);
   const [isCommitting, setIsCommitting] = useState(false);
+
+  // Debugging state
+  const [lastOcrFull, setLastOcrFull] = useState<string | null>(null);
+  const [lastOcrExtracted, setLastOcrExtracted] = useState<{name: string, collector?: string} | null>(null);
 
   // Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -159,19 +299,28 @@ export default function ScannerScreen() {
   const cooldownRef = useRef(false);
   const cameraRef = useRef<CameraView>(null);
   const videoRef = useRef<any>(null);
+  const guideRef = useRef<View>(null);
   const canvasRef = useRef<any>(null);
 
-  // Fetch set list on mount
+  // Fetch set list — branches on isPokemonUser; reset selected set when mode flips
   useEffect(() => {
+    setSelectedSet(null);
     setSetsLoading(true);
-    fetchMtgSets()
-      .then(sets => setSetList(sets))
-      .catch(console.error)
-      .finally(() => setSetsLoading(false));
+    if (isPokemonUser) {
+      fetchPokemonSets()
+        .then(sets => setPokemonSetList(sets))
+        .catch(console.error)
+        .finally(() => setSetsLoading(false));
+    } else {
+      fetchMtgSets()
+        .then(sets => setSetList(sets))
+        .catch(console.error)
+        .finally(() => setSetsLoading(false));
+    }
     return () => {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
-  }, []);
+  }, [isPokemonUser]);
 
   useEffect(() => {
     if (Platform.OS === "web") {
@@ -256,6 +405,13 @@ export default function ScannerScreen() {
     };
   }, [webPermissionGranted, scanning, selectedSet]);
 
+  // Fetch card list for the selected set for local fuzzy matching
+  useEffect(() => {
+    if (selectedSet) {
+      fetchCardsBySet(selectedSet.code).then(setSetCards).catch(e => console.error("Cache failed:", e));
+    }
+  }, [selectedSet]);
+
   const handleOcrResult = useCallback(
     async (recognizedText: string) => {
       if (cooldownRef.current) return;
@@ -266,6 +422,7 @@ export default function ScannerScreen() {
       if (!selectedSet) return;
 
       const info = extractCardInfo(recognizedText);
+      setLastOcrExtracted(info);
       if (!info) return;
 
       // Sanitize: strip non-alphanumeric chars before searching
@@ -281,15 +438,31 @@ export default function ScannerScreen() {
       try {
         let results: ScryfallCard[] = [];
 
-        // 1. Try exact match by collector number if found
-        if (info.collectorNumber) {
-          const exactCard = await getCardBySetAndNumber(selectedSet.code, info.collectorNumber);
-          if (exactCard) results = [exactCard];
+        // 1. Try name search FIRST (as requested)
+        if (sanitizedName) {
+          // A. Try LOCAL fuzzy match first for speed & resilience
+          if (setCards.length > 0) {
+            const matches = setCards
+              .map(c => ({ card: c, score: stringSimilarity(sanitizedName, c.name) }))
+              .filter(m => m.score > 0.6)
+              .sort((a, b) => b.score - a.score);
+            
+            if (matches.length > 0 && matches[0].score > 0.85) {
+              console.log("Local Fuzzy WIN:", matches[0].card.name, "score:", matches[0].score);
+              results = [matches[0].card];
+            }
+          }
+
+          // B. If no local high-confidence winner, hit Scryfall
+          if (results.length === 0) {
+            results = await searchCardByNameInSet(sanitizedName, selectedSet.code);
+          }
         }
 
-        // 2. Fallback to name search
-        if (results.length === 0 && sanitizedName) {
-          results = await searchCardByNameInSet(sanitizedName, selectedSet.code);
+        // 2. Fallback to exact match by collector number if name search fails
+        if (results.length === 0 && info.collectorNumber) {
+          const exactCard = await getCardBySetAndNumber(selectedSet.code, info.collectorNumber);
+          if (exactCard) results = [exactCard];
         }
 
         if (scanMode === "rapid") {
@@ -337,7 +510,8 @@ export default function ScannerScreen() {
             showToast("No match in set — try again");
             return;
           }
-          if (autoScan) setAutoScan(false);
+          // Only stop auto-scan on native devices; keep it running on web side-panel
+          if (autoScan && !isWeb) setAutoScan(false);
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           setResultCandidates(results);
           setResultModalVisible(true);
@@ -433,45 +607,83 @@ export default function ScannerScreen() {
     }
   };
 
-  const captureManual = async (silent = false) => {
-    if (isProcessing) return;
+  const captureManual = async (silent = false): Promise<boolean> => {
+    if (isProcessing) return false;
     setIsProcessing(true);
     try {
       if (Platform.OS === "web") {
-        if (videoRef.current && canvasRef.current) {
-          const video = videoRef.current;
-          const canvas = canvasRef.current;
-          const vW = video.videoWidth;
-          const vH = video.videoHeight;
-          const scale = Math.min(vW / SCREEN_WIDTH, vH / SCREEN_HEIGHT);
-          const cropW = CARD_WIDTH * scale;
-          const cardHCanvas = CARD_HEIGHT * scale;
-          const topCropH = cardHCanvas * 0.15;
-          const botCropH = cardHCanvas * 0.12;
+          const guide = guideRef.current as unknown as HTMLDivElement;
+          if (videoRef.current && canvasRef.current && guide) {
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            
+            if (!video.videoWidth || !video.videoHeight) {
+              console.log("Video dimensions not ready, skipping...");
+              return false;
+            }
+            
+            const rectV = video.getBoundingClientRect();
+            const rectG = guide.getBoundingClientRect();
+            
+            const vW = video.videoWidth;
+            const vH = video.videoHeight;
+            
+            const scaleX = vW / rectV.width;
+            const scaleY = vH / rectV.height;
+            
+            const sx = (rectG.left - rectV.left) * scaleX;
+            const sy = (rectG.top - rectV.top) * scaleY;
+            const sw = rectG.width * scaleX;
+            const sh = rectG.height * scaleY;
 
-          const sx = (vW - cropW) / 2;
-          const sy = (vH - cardHCanvas) / 2;
+            canvas.width = sw;
+            canvas.height = sh;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+              
+              // Apply Grayscale + Contrast pass to help Tesseract
+              const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const data = imgData.data;
+              for (let i = 0; i < data.length; i += 4) {
+                const r = data[i], g = data[i+1], b = data[i+2];
+                // Luma formula for grayscale
+                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                
+                // Increase contrast: items below 128 go darker, above 128 go lighter
+                // (contrast factor 1.5)
+                const contrast = 1.5;
+                let val = (contrast * (gray - 128)) + 128;
+                val = Math.max(0, Math.min(255, val));
+                
+                data[i] = data[i+1] = data[i+2] = val;
+              }
+              ctx.putImageData(imgData, 0, 0);
+            }
 
-          canvas.width = cropW;
-          canvas.height = topCropH + botCropH;
-          const ctx = canvas.getContext("2d");
+            const base64Data = canvas.toDataURL("image/jpeg", 0.95);
+            setDebugImage(base64Data);
+          
+          if (!workerRef.current) {
+            console.log("Worker not ready, skipping OCR pass...");
+            return false;
+          }
 
-          // Draw top (Card Name)
-          ctx?.drawImage(video, sx, sy, cropW, topCropH, 0, 0, cropW, topCropH);
-          // Draw bottom (Collector Info)
-          ctx?.drawImage(video, sx, sy + cardHCanvas - botCropH, cropW, botCropH, 0, topCropH, cropW, botCropH);
-
-          const base64Data = canvas.toDataURL("image/jpeg", 0.9);
-          console.log("Starting Web OCR analysis on Cropped Image...");
-          const worker = await Tesseract.createWorker("eng");
-          const { data: { text } } = await worker.recognize(base64Data);
-          await worker.terminate();
+          const { data: { text } } = await workerRef.current.recognize(base64Data);
+          console.log("--- WEB OCR DEBUG (BoundRect Mapping) ---");
+          console.log("Video Size:", vW, "x", vH);
+          console.log("Display Rect:", rectV.width.toFixed(0), "x", rectV.height.toFixed(0));
+          console.log("Scale X/Y:", scaleX.toFixed(2), scaleY.toFixed(2));
+          console.log("Crop Region (sx, sy, sw, sh):", sx.toFixed(0), sy.toFixed(0), sw.toFixed(0), sh.toFixed(0));
           console.log("OCR Text Extracted:\n", text);
+          setLastOcrFull(text);
           if (text.trim()) {
             await handleOcrResult(text);
+            return true;
           } else if (!silent) {
             if (window) window.alert("Could not read any text. Try getting closer or improving lighting.");
           }
+          return false;
         }
       } else {
         if (cameraRef.current) {
@@ -480,18 +692,22 @@ export default function ScannerScreen() {
           if (photo?.uri) {
             console.log("Starting Native OCR analysis on Cropped Image...");
             const cropW = photo.width * 0.75;
-            const cardH = cropW / CARD_RATIO;
+            const topCropH = (cropW / CARD_RATIO) * 0.15; // Only name bar
             const originX = (photo.width - cropW) / 2;
-            const originY = (photo.height - cardH) / 2;
+            const originY = (photo.height - (cropW / CARD_RATIO)) / 2;
             const cropped = await ImageManipulator.manipulateAsync(
               photo.uri,
-              [{ crop: { originX, originY, width: cropW, height: cardH } }],
+              [{ crop: { originX, originY, width: cropW, height: topCropH } }],
               { base64: true, format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
             );
-            const worker = await Tesseract.createWorker("eng");
-            const { data: { text } } = await worker.recognize(`data:image/jpeg;base64,${cropped.base64}`);
-            await worker.terminate();
+
+            if (cropped.base64) setDebugImage(`data:image/jpeg;base64,${cropped.base64}`);
+            if (!workerRef.current) return false;
+            const { data: { text } } = await workerRef.current.recognize(`data:image/jpeg;base64,${cropped.base64}`);
+            console.log("--- NATIVE OCR DEBUG ---");
+            console.log("Photo Size:", photo.width, "x", photo.height);
             console.log("OCR Text Extracted:\n", text);
+            setLastOcrFull(text);
             if (text.trim()) {
               await handleOcrResult(text);
             } else if (!silent) {
@@ -506,18 +722,27 @@ export default function ScannerScreen() {
     } finally {
       setIsProcessing(false);
     }
+    return false;
   };
 
   // Continuous background scanner hook
   useEffect(() => {
     let timeoutId: ReturnType<typeof setTimeout>;
     const performAutoScan = async () => {
+      if (!isMounted.current) return;
       if (!autoScan || isProcessing || !scanning) {
         if (autoScan) timeoutId = setTimeout(performAutoScan, 1000);
         return;
       }
-      await captureManual(true);
-      timeoutId = setTimeout(performAutoScan, 2000);
+      try {
+        const foundText = await captureManual(true);
+        // If no text, wait longer (3.5s) to "give camera some time"; otherwise stay at 2s
+        const delay = foundText ? 2000 : 3500;
+        if (isMounted.current) timeoutId = setTimeout(performAutoScan, delay);
+      } catch (err) {
+        console.error("AutoScan loop error:", err);
+        if (isMounted.current) timeoutId = setTimeout(performAutoScan, 5000); // Backoff on error
+      }
     };
     if (autoScan) performAutoScan();
     return () => clearTimeout(timeoutId);
@@ -637,6 +862,8 @@ export default function ScannerScreen() {
     );
   }
 
+  const debugOcrVisible = !!lastOcrFull;
+
   return (
     <View style={styles.container}>
       {/* Hidden canvas for web capture */}
@@ -692,8 +919,7 @@ export default function ScannerScreen() {
                 <Text style={[styles.modeBtnText, scanMode === "single" && styles.modeBtnTextActive]}>
                   Single
                 </Text>
-              </Pressable>
-              <Pressable
+              </Pressable><Pressable
                 style={[styles.modeBtn, scanMode === "rapid" && styles.modeBtnRapid]}
                 onPress={() => setScanMode("rapid")}
               >
@@ -734,12 +960,12 @@ export default function ScannerScreen() {
           <View style={styles.overlayDim} />
           <View style={styles.overlayRow}>
             <View style={styles.overlayDim} />
-            <View style={styles.cardFrame}>
+            <View 
+              ref={guideRef} 
+              style={styles.cardFrame}
+            >
               <View style={styles.targetBoxTop}>
-                <Text style={styles.targetLabel}>Card Name</Text>
-              </View>
-              <View style={styles.targetBoxBottom}>
-                <Text style={styles.targetLabel}>Collector #</Text>
+                <Text style={styles.targetLabel}>Card Name Only</Text>
               </View>
             </View>
             <View style={styles.overlayDim} />
@@ -749,6 +975,32 @@ export default function ScannerScreen() {
             <Text style={styles.frameHelperSub}>Hold MTG card 8-12 inches away</Text>
           </View>
         </View>
+
+        {/* OCR Debug Panel */}
+        {debugOcrVisible && (
+          <View style={styles.debugPanel}>
+            <View style={styles.debugHeader}>
+              <Text style={styles.debugTitle}>Latest OCR Read</Text>
+              <Pressable onPress={() => setLastOcrFull(null)}>
+                <Text style={styles.debugClose}>✕</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.debugText} numberOfLines={3}>
+              {lastOcrFull?.replace(/\n/g, " | ")}
+            </Text>
+            {debugImage && (
+              <View style={styles.debugImageContainer}>
+                <Text style={styles.debugImgLabel}>Croppead Input:</Text>
+                <Image source={{ uri: debugImage }} style={styles.debugImg} resizeMode="contain" />
+              </View>
+            )}
+            {lastOcrExtracted && (
+              <Text style={styles.debugExtraction}>
+                Match: <Text style={{color: ACCENT}}>{lastOcrExtracted.name || "???"}</Text> {lastOcrExtracted.collector ? `(#${lastOcrExtracted.collector})` : ""}
+              </Text>
+            )}
+          </View>
+        )}
 
         {/* Session Queue — Rapid Mode only */}
         {scanMode === "rapid" && (
@@ -893,135 +1145,252 @@ export default function ScannerScreen() {
       </Modal>
 
       {/* ── Review Scan Modal (Rapid mode fallback) ── */}
-      <Modal
-        visible={reviewModalVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setReviewModalVisible(false)}
-      >
-        <View style={styles.resultModalBg}>
-          <View style={styles.resultSheet}>
-            <View style={styles.resultSheetHeader}>
-              <Text style={styles.resultSheetTitle}>Review Scan</Text>
-              <Pressable style={styles.resultSheetClose} onPress={() => setReviewModalVisible(false)}>
-                <Text style={styles.resultSheetCloseText}>✕</Text>
-              </Pressable>
-            </View>
-            <View style={styles.reviewSearchRow}>
-              <TextInput
-                style={styles.reviewInput}
-                value={reviewEditText}
-                onChangeText={setReviewEditText}
-                placeholder="Edit OCR text..."
-                placeholderTextColor="#606078"
-                autoCapitalize="words"
-                returnKeyType="search"
-                onSubmitEditing={() => handleReviewSearch(reviewEditText)}
-              />
-              <Pressable
-                style={[styles.reviewSearchBtn, reviewSearching && styles.btnDisabled]}
-                onPress={() => handleReviewSearch(reviewEditText)}
-                disabled={reviewSearching}
-              >
-                {reviewSearching
-                  ? <ActivityIndicator size="small" color="#0a0a0f" />
-                  : <Text style={styles.reviewSearchBtnText}>Search</Text>
-                }
-              </Pressable>
-            </View>
-            {reviewResults.length === 0 && !reviewSearching && (
-              <View style={styles.reviewEmptyState}>
-                <Text style={styles.reviewEmptyText}>
-                  No results. Edit the text above and search again.
-                </Text>
+      {reviewModalVisible && (
+        isWeb ? (
+          <View style={[styles.resultModalBgWeb, { zIndex: 1000 }]}>
+            <View style={styles.resultSheetWeb}>
+              <View style={styles.resultSheetHeader}>
+                <Text style={styles.resultSheetTitle}>Review Scan</Text>
+                <Pressable style={styles.resultSheetClose} onPress={() => setReviewModalVisible(false)}>
+                  <Text style={styles.resultSheetCloseText}>✕</Text>
+                </Pressable>
               </View>
-            )}
-            <ScrollView>
-              {reviewResults.map(card => {
-                const thumbUri = getSmallImageUri(card);
-                const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
-                return (
-                  <Pressable key={card.id} style={styles.resultCard} onPress={() => handleReviewSelect(card)}>
-                    {thumbUri ? (
-                      <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
-                    ) : (
-                      <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
-                        <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+              <View style={styles.reviewSearchRow}>
+                <TextInput
+                  style={styles.reviewInput}
+                  value={reviewEditText}
+                  onChangeText={setReviewEditText}
+                  placeholder="Edit OCR text..."
+                  placeholderTextColor="#606078"
+                  autoCapitalize="words"
+                  returnKeyType="search"
+                  onSubmitEditing={() => handleReviewSearch(reviewEditText)}
+                />
+                <Pressable
+                  style={[styles.reviewSearchBtn, reviewSearching && styles.btnDisabled]}
+                  onPress={() => handleReviewSearch(reviewEditText)}
+                  disabled={reviewSearching}
+                >
+                  {reviewSearching
+                    ? <ActivityIndicator size="small" color="#0a0a0f" />
+                    : <Text style={styles.reviewSearchBtnText}>Search</Text>
+                  }
+                </Pressable>
+              </View>
+              {reviewResults.length === 0 && !reviewSearching && (
+                <View style={styles.reviewEmptyState}>
+                  <Text style={styles.reviewEmptyText}>
+                    No results. Edit the text above and search again.
+                  </Text>
+                </View>
+              )}
+              <ScrollView>
+                {reviewResults.map(card => {
+                  const thumbUri = getSmallImageUri(card);
+                  const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
+                  return (
+                    <Pressable key={card.id} style={styles.resultCard} onPress={() => handleReviewSelect(card)}>
+                      {thumbUri ? (
+                        <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
+                      ) : (
+                        <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
+                          <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+                        </View>
+                      )}
+                      <View style={styles.resultInfo}>
+                        <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
+                        <Text style={styles.resultMeta} numberOfLines={1}>{card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}</Text>
+                        <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
                       </View>
-                    )}
-                    <View style={styles.resultInfo}>
-                      <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
-                      <Text style={styles.resultMeta} numberOfLines={1}>
-                        {card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}
-                      </Text>
-                      <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
-                    </View>
-                    {price && (
-                      <View style={styles.resultPriceChip}>
-                        <Text style={styles.resultPrice}>{price}</Text>
-                      </View>
-                    )}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <Pressable style={styles.resultCancelBtn} onPress={() => setReviewModalVisible(false)}>
-              <Text style={styles.resultCancelText}>Skip — Try scanning again</Text>
-            </Pressable>
+                      {price && (
+                        <View style={styles.resultPriceChip}>
+                          <Text style={styles.resultPrice}>{price}</Text>
+                        </View>
+                      )}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              <Pressable style={styles.resultCancelBtn} onPress={() => setReviewModalVisible(false)}>
+                <Text style={styles.resultCancelText}>Skip — Try scanning again</Text>
+              </Pressable>
+            </View>
           </View>
-        </View>
-      </Modal>
+        ) : (
+          <Modal
+            visible={reviewModalVisible}
+            animationType="slide"
+            transparent
+            onRequestClose={() => setReviewModalVisible(false)}
+          >
+            <View style={styles.resultModalBg}>
+              <View style={styles.resultSheet}>
+                <View style={styles.resultSheetHeader}>
+                  <Text style={styles.resultSheetTitle}>Review Scan</Text>
+                  <Pressable style={styles.resultSheetClose} onPress={() => setReviewModalVisible(false)}>
+                    <Text style={styles.resultSheetCloseText}>✕</Text>
+                  </Pressable>
+                </View>
+                <View style={styles.reviewSearchRow}>
+                  <TextInput
+                    style={styles.reviewInput}
+                    value={reviewEditText}
+                    onChangeText={setReviewEditText}
+                    placeholder="Edit OCR text..."
+                    placeholderTextColor="#606078"
+                    autoCapitalize="words"
+                    returnKeyType="search"
+                    onSubmitEditing={() => handleReviewSearch(reviewEditText)}
+                  />
+                  <Pressable
+                    style={[styles.reviewSearchBtn, reviewSearching && styles.btnDisabled]}
+                    onPress={() => handleReviewSearch(reviewEditText)}
+                    disabled={reviewSearching}
+                  >
+                    {reviewSearching
+                      ? <ActivityIndicator size="small" color="#0a0a0f" />
+                      : <Text style={styles.reviewSearchBtnText}>Search</Text>
+                    }
+                  </Pressable>
+                </View>
+                {reviewResults.length === 0 && !reviewSearching && (
+                  <View style={styles.reviewEmptyState}>
+                    <Text style={styles.reviewEmptyText}>
+                      No results. Edit the text above and search again.
+                    </Text>
+                  </View>
+                )}
+                <ScrollView>
+                  {reviewResults.map(card => {
+                    const thumbUri = getSmallImageUri(card);
+                    const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
+                    return (
+                      <Pressable key={card.id} style={styles.resultCard} onPress={() => handleReviewSelect(card)}>
+                        {thumbUri ? (
+                          <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
+                        ) : (
+                          <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
+                            <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+                          </View>
+                        )}
+                        <View style={styles.resultInfo}>
+                          <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
+                          <Text style={styles.resultMeta} numberOfLines={1}>
+                            {card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}
+                          </Text>
+                          <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
+                        </View>
+                        {price && (
+                          <View style={styles.resultPriceChip}>
+                            <Text style={styles.resultPrice}>{price}</Text>
+                          </View>
+                        )}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+                <Pressable style={styles.resultCancelBtn} onPress={() => setReviewModalVisible(false)}>
+                  <Text style={styles.resultCancelText}>Skip — Try scanning again</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Modal>
+        )
+      )}
 
       {/* ── Single-Mode Result Picker Modal ── */}
-      <Modal
-        visible={resultModalVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setResultModalVisible(false)}
-      >
-        <View style={styles.resultModalBg}>
-          <View style={styles.resultSheet}>
-            <View style={styles.resultSheetHeader}>
-              <Text style={styles.resultSheetTitle}>Which card is this?</Text>
-              <Pressable style={styles.resultSheetClose} onPress={() => setResultModalVisible(false)}>
-                <Text style={styles.resultSheetCloseText}>✕</Text>
+      {resultModalVisible && (
+        isWeb ? (
+          <View style={[styles.resultModalBgWeb, { zIndex: 1000 }]}>
+            <View style={styles.resultSheetWeb}>
+              <View style={styles.resultSheetHeader}>
+                <Text style={styles.resultSheetTitle}>Which card is this?</Text>
+                <Pressable style={styles.resultSheetClose} onPress={() => setResultModalVisible(false)}>
+                  <Text style={styles.resultSheetCloseText}>✕</Text>
+                </Pressable>
+              </View>
+              <ScrollView>{resultCandidates.map(card => {
+                  const thumbUri = getSmallImageUri(card);
+                  const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
+                  return (
+                    <Pressable key={card.id} style={styles.resultCard} onPress={() => handleResultSelect(card)}>
+                      {thumbUri ? (
+                        <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
+                      ) : (
+                        <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
+                          <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+                        </View>
+                      )}
+                      <View style={styles.resultInfo}>
+                        <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
+                        <Text style={styles.resultMeta} numberOfLines={1}>{card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}</Text>
+                        <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
+                      </View>
+                      {price && (
+                        <View style={styles.resultPriceChip}>
+                          <Text style={styles.resultPrice}>{price}</Text>
+                        </View>
+                      )}
+                    </Pressable>
+                  );
+                })}</ScrollView>
+              <Pressable style={styles.resultCancelBtn} onPress={() => setResultModalVisible(false)}>
+                <Text style={styles.resultCancelText}>None of these — Try again</Text>
               </Pressable>
             </View>
-            <ScrollView>
-              {resultCandidates.map(card => {
-                const thumbUri = getSmallImageUri(card);
-                const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
-                return (
-                  <Pressable key={card.id} style={styles.resultCard} onPress={() => handleResultSelect(card)}>
-                    {thumbUri ? (
-                      <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
-                    ) : (
-                      <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
-                        <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
-                      </View>
-                    )}
-                    <View style={styles.resultInfo}>
-                      <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
-                      <Text style={styles.resultMeta} numberOfLines={1}>
-                        {card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}
-                      </Text>
-                      <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
-                    </View>
-                    {price && (
-                      <View style={styles.resultPriceChip}>
-                        <Text style={styles.resultPrice}>{price}</Text>
-                      </View>
-                    )}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <Pressable style={styles.resultCancelBtn} onPress={() => setResultModalVisible(false)}>
-              <Text style={styles.resultCancelText}>None of these — Try again</Text>
-            </Pressable>
           </View>
-        </View>
-      </Modal>
+        ) : (
+          <Modal
+            visible={resultModalVisible}
+            animationType="slide"
+            transparent
+            onRequestClose={() => setResultModalVisible(false)}
+          >
+            <View style={styles.resultModalBg}>
+              <View style={styles.resultSheet}>
+                <View style={styles.resultSheetHeader}>
+                  <Text style={styles.resultSheetTitle}>Which card is this?</Text>
+                  <Pressable style={styles.resultSheetClose} onPress={() => setResultModalVisible(false)}>
+                    <Text style={styles.resultSheetCloseText}>✕</Text>
+                  </Pressable>
+                </View>
+                <ScrollView>
+                  {resultCandidates.map(card => {
+                    const thumbUri = getSmallImageUri(card);
+                    const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
+                    return (
+                      <Pressable key={card.id} style={styles.resultCard} onPress={() => handleResultSelect(card)}>
+                        {thumbUri ? (
+                          <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
+                        ) : (
+                          <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
+                            <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+                          </View>
+                        )}
+                        <View style={styles.resultInfo}>
+                          <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
+                          <Text style={styles.resultMeta} numberOfLines={1}>
+                            {card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}
+                          </Text>
+                          <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
+                        </View>
+                        {price && (
+                          <View style={styles.resultPriceChip}>
+                            <Text style={styles.resultPrice}>{price}</Text>
+                          </View>
+                        )}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+                <Pressable style={styles.resultCancelBtn} onPress={() => setResultModalVisible(false)}>
+                  <Text style={styles.resultCancelText}>None of these — Try again</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Modal>
+        )
+      )}
     </View>
   );
 }
@@ -1066,11 +1435,10 @@ const styles = StyleSheet.create({
   // Camera overlay
   overlayContainer: { ...StyleSheet.absoluteFillObject, zIndex: 10 },
   overlayDim: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)" },
-  overlayRow: { flexDirection: "row", height: CARD_HEIGHT },
-  cardFrame: { width: CARD_WIDTH, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 12, justifyContent: "space-between" },
-  targetBoxTop: { height: "15%", borderBottomWidth: 1, borderColor: "rgba(255,255,255,0.5)", borderStyle: "dashed", padding: 6 },
-  targetBoxBottom: { height: "12%", borderTopWidth: 1, borderColor: "rgba(255,255,255,0.5)", borderStyle: "dashed", padding: 6, justifyContent: "flex-end" },
-  targetLabel: { color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
+  overlayRow: { flexDirection: "row", height: TITLE_HEIGHT },
+  cardFrame: { width: CARD_WIDTH, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 8, justifyContent: "center" },
+  targetBoxTop: { width: "100%", height: "100%", paddingHorizontal: 12, justifyContent: "center" },
+  targetLabel: { color: "rgba(255,255,255,0.8)", fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1 },
   frameHelper: { color: "#f0f0f8", fontSize: 13, fontWeight: "700", textAlign: "center", paddingHorizontal: 20 },
   frameHelperSub: { color: ACCENT, fontSize: 13, fontWeight: "800", textAlign: "center", marginTop: 4 },
 
@@ -1165,6 +1533,42 @@ const styles = StyleSheet.create({
   resultTypeLine: { color: "#606078", fontSize: 11 },
   resultPriceChip: { backgroundColor: "rgba(34,197,94,0.15)", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: "#22c55e" },
   resultPrice: { color: "#22c55e", fontWeight: "700", fontSize: 13 },
-  resultCancelBtn: { margin: 16, paddingVertical: 14, alignItems: "center", borderTopWidth: 1, borderColor: "#222233" },
+  resultCancelBtn: { margin: 16, paddingVertical: 14, alignItems: "center" },
   resultCancelText: { color: "#606078", fontWeight: "600" },
+
+  // Debug Panel
+  debugPanel: { position: "absolute", top: 180, left: 20, right: 20, backgroundColor: "rgba(10,10,20,0.9)", borderRadius: 12, padding: 12, borderWidth: 1, borderColor: "#333344", zIndex: 60 },
+  debugHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
+  debugTitle: { color: "#606078", fontSize: 10, fontWeight: "800", textTransform: "uppercase" },
+  debugClose: { color: "#606078", fontSize: 12, padding: 4 },
+  debugText: { color: "#f0f0f8", fontSize: 13, fontFamily: Platform.OS === "ios" ? "Courier" : "monospace" },
+  debugExtraction: { color: "#a0a0b8", fontSize: 11, marginTop: 4, fontWeight: "600" },
+
+  debugImageContainer: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderColor: "#333344" },
+  debugImgLabel: { color: "#606078", fontSize: 9, fontWeight: "800", marginBottom: 4, textTransform: "uppercase" },
+  debugImg: { width: "100%", height: 40, backgroundColor: "#000", borderRadius: 4 },
+
+  // Web side panel overrides
+  resultModalBgWeb: { 
+    position: "absolute", 
+    top: 56, // below topBar
+    bottom: 0, 
+    left: 0, 
+    right: 0, 
+    backgroundColor: "transparent", 
+    alignItems: "flex-end",
+    pointerEvents: "box-none" 
+  },
+  resultSheetWeb: { 
+    width: 400, 
+    height: "100%", 
+    backgroundColor: "rgba(10,10,15,0.95)", 
+    borderLeftWidth: 1, 
+    borderColor: "#222233",
+    paddingTop: 60, // Don't impede top toolbar
+    shadowColor: "#000",
+    shadowOffset: { width: -5, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 15,
+  },
 });

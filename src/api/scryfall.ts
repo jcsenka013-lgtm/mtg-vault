@@ -162,6 +162,23 @@ export async function searchCardByNameInSet(name: string, setCode: string): Prom
 }
 
 /**
+ * Fetch all unique cards in a specific set.
+ * Used for local fuzzy matching to improve OCR reliability.
+ */
+export async function fetchCardsBySet(setCode: string): Promise<ScryfallCard[]> {
+  try {
+    const results = await rateLimitedGet<ScryfallSearchResponse>("/cards/search", {
+      q: `e:${setCode}`,
+      order: "name",
+      unique: "cards",
+    });
+    return results.data;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Parse a ScryfallCard into our app's normalized format.
  */
 export function normalizeScryfallCard(card: ScryfallCard) {
