@@ -25,6 +25,8 @@ const CARD_RATIO = 63 / 88;
 const CARD_WIDTH = Math.min(SCREEN_WIDTH * 0.85, 450);
 const CARD_HEIGHT = CARD_WIDTH / CARD_RATIO;
 const TITLE_HEIGHT = CARD_HEIGHT * 0.15;
+// Platform constant — safe at module level; never changes at runtime
+const isWeb = Platform.OS === "web";
 
 import { searchCardByNameInSet, fetchMtgSets, normalizeScryfallCard, getCardBySetAndNumber, fetchCardsBySet } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
@@ -35,7 +37,7 @@ import * as ImageManipulator from "expo-image-manipulator";
 
 // Regex patterns for OCR text extraction (used for future set code detection)
 const COLLECTOR_PATTERN = /(\d{1,4})\s*\/\s*(\d{1,4})/;
-const SET_CODE_PATTERN = /\b([A-Z]{3,5})\b/g;
+const SET_CODE_PATTERN = /\b([A-Z]{3,5})\b/;
 
 // ── Pokemon TCG types ────────────────────────────────────────────────────────
 interface PokemonSet {
@@ -150,6 +152,12 @@ interface QueuedCard {
   priceUsdFoil: number | null;
 }
 
+interface ReviewNeededItem {
+  localId: string;
+  ocrText: string;
+  candidates: ScryfallCard[];
+}
+
 function extractCardInfo(text: string): { name: string; collectorNumber?: string } | null {
   // Clean common OCR noise: pipes, colons, semi-colons, brackets, and leading/trailing junk
   const cleanedText = text.replace(/[|:;\[\]]/g, " ").replace(/\s\s+/g, " ").trim();
@@ -261,6 +269,8 @@ export default function ScannerScreen() {
     const setup = async () => {
       try {
         const worker = await Tesseract.createWorker("eng");
+        // PSM 7 = treat image as a single text line — ideal for card title strips
+        await worker.setParameters({ tessedit_pageseg_mode: "7" });
         if (active) workerRef.current = worker;
       } catch (err) {
         console.error("Worker init failed:", err);
@@ -279,6 +289,13 @@ export default function ScannerScreen() {
   const [queueExpanded, setQueueExpanded] = useState(true);
   const [isCommitting, setIsCommitting] = useState(false);
 
+  // Non-blocking review queue (Feature 2)
+  const [needsReview, setNeedsReview] = useState<ReviewNeededItem[]>([]);
+  const [reviewingItem, setReviewingItem] = useState<ReviewNeededItem | null>(null);
+
+  // Auto-capture (Feature 3)
+  const [autoCaptureActive, setAutoCaptureActive] = useState(false);
+
   // Debugging state
   const [lastOcrFull, setLastOcrFull] = useState<string | null>(null);
   const [lastOcrExtracted, setLastOcrExtracted] = useState<{name: string, collector?: string} | null>(null);
@@ -295,12 +312,19 @@ export default function ScannerScreen() {
 
   // Success flash animation
   const flashAnim = useRef(new Animated.Value(0)).current;
+  // Auto-capture countdown progress (0 → 1 over 1.5 s)
+  const countdownAnim = useRef(new Animated.Value(0)).current;
 
   const cooldownRef = useRef(false);
   const cameraRef = useRef<CameraView>(null);
   const videoRef = useRef<any>(null);
   const guideRef = useRef<View>(null);
   const canvasRef = useRef<any>(null);
+  // Stability detection refs (Feature 3)
+  const prevPixelsRef = useRef<Uint8ClampedArray | null>(null);
+  const stableFramesRef = useRef(0);
+  // Always-current ref to captureManual so effects avoid stale closures
+  const captureManualRef = useRef<(silent?: boolean) => Promise<boolean>>(async () => false);
 
   // Fetch set list — branches on isPokemonUser; reset selected set when mode flips
   useEffect(() => {
@@ -467,10 +491,12 @@ export default function ScannerScreen() {
 
         if (scanMode === "rapid") {
           if (results.length === 0) {
-            // No match → open Review Scan modal
-            setReviewEditText(sanitizedName);
-            setReviewResults([]);
-            setReviewModalVisible(true);
+            // No match → push to non-blocking review queue instead of opening a modal
+            setNeedsReview(prev => [
+              ...prev,
+              { localId: `review-${Date.now()}`, ocrText: sanitizedName, candidates: [] },
+            ]);
+            showToast("No match found — flagged for review");
             return;
           }
 
@@ -499,10 +525,12 @@ export default function ScannerScreen() {
             await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             triggerSuccessFlash();
           } else {
-            // Low confidence → open Review Scan modal with pre-loaded results
-            setReviewEditText(sanitizedName);
-            setReviewResults(results);
-            setReviewModalVisible(true);
+            // Low confidence → push to review queue, camera keeps rolling
+            setNeedsReview(prev => [
+              ...prev,
+              { localId: `review-${Date.now()}`, ocrText: sanitizedName, candidates: results },
+            ]);
+            showToast("Low confidence — flagged for review");
           }
         } else {
           // Single mode: show result picker
@@ -551,6 +579,14 @@ export default function ScannerScreen() {
     }
   }, [selectedSet]);
 
+  // Open the review modal for a flagged item in the review queue
+  const openReviewItem = useCallback((item: ReviewNeededItem) => {
+    setReviewingItem(item);
+    setReviewEditText(item.ocrText);
+    setReviewResults(item.candidates);
+    setReviewModalVisible(true);
+  }, []);
+
   const handleReviewSelect = useCallback(async (card: ScryfallCard) => {
     setReviewModalVisible(false);
     const norm = normalizeScryfallCard(card);
@@ -569,10 +605,15 @@ export default function ScannerScreen() {
       priceUsd: norm.priceUsd,
       priceUsdFoil: norm.priceUsdFoil,
     };
+    // If resolving a flagged review item, remove it from the review queue
+    if (reviewingItem) {
+      setNeedsReview(prev => prev.filter(r => r.localId !== reviewingItem.localId));
+      setReviewingItem(null);
+    }
     setRapidQueue(prev => [queued, ...prev]);
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     triggerSuccessFlash();
-  }, [triggerSuccessFlash]);
+  }, [reviewingItem, triggerSuccessFlash]);
 
   const commitBatch = async () => {
     if (rapidQueue.length === 0 || !activeSession || isCommitting) return;
@@ -636,26 +677,26 @@ export default function ScannerScreen() {
             const sw = rectG.width * scaleX;
             const sh = rectG.height * scaleY;
 
-            canvas.width = sw;
-            canvas.height = sh;
+            // 2x upscale before OCR — Tesseract accuracy improves significantly on larger images
+            const OCR_SCALE = 2;
+            canvas.width = sw * OCR_SCALE;
+            canvas.height = sh * OCR_SCALE;
             const ctx = canvas.getContext("2d");
             if (ctx) {
-              ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-              
-              // Apply Grayscale + Contrast pass to help Tesseract
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = "high";
+              ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+
+              // Grayscale + high-contrast pass to help Tesseract read stylized card fonts
               const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
               const data = imgData.data;
               for (let i = 0; i < data.length; i += 4) {
                 const r = data[i], g = data[i+1], b = data[i+2];
-                // Luma formula for grayscale
                 const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-                
-                // Increase contrast: items below 128 go darker, above 128 go lighter
-                // (contrast factor 1.5)
-                const contrast = 1.5;
+                // Contrast factor 2.0 for bolder text separation
+                const contrast = 2.0;
                 let val = (contrast * (gray - 128)) + 128;
                 val = Math.max(0, Math.min(255, val));
-                
                 data[i] = data[i+1] = data[i+2] = val;
               }
               ctx.putImageData(imgData, 0, 0);
@@ -691,13 +732,38 @@ export default function ScannerScreen() {
           const photo = await cameraRef.current.takePictureAsync({ base64: true });
           if (photo?.uri) {
             console.log("Starting Native OCR analysis on Cropped Image...");
-            const cropW = photo.width * 0.75;
-            const topCropH = (cropW / CARD_RATIO) * 0.15; // Only name bar
-            const originX = (photo.width - cropW) / 2;
-            const originY = (photo.height - (cropW / CARD_RATIO)) / 2;
+
+            // ── Feature 1: Map the visual overlay to photo coordinates ──
+            // The guide overlay occupies: width=CARD_WIDTH, height=TITLE_HEIGHT,
+            // horizontally centred, vertically centred on the full screen.
+            const guideScreenX = (SCREEN_WIDTH - CARD_WIDTH) / 2;
+            const guideScreenY = (SCREEN_HEIGHT - TITLE_HEIGHT) / 2;
+
+            // Camera fills the screen with "cover" semantics.
+            const screenAspect = SCREEN_WIDTH / SCREEN_HEIGHT;
+            const photoAspect  = photo.width  / photo.height;
+
+            let scale: number, offsetX: number, offsetY: number;
+            if (photoAspect > screenAspect) {
+              // Photo is wider than screen – sides cropped in the preview
+              scale   = photo.height / SCREEN_HEIGHT;
+              offsetX = (photo.width - SCREEN_WIDTH * scale) / 2;
+              offsetY = 0;
+            } else {
+              // Photo is taller than screen – top/bottom cropped in the preview
+              scale   = photo.width / SCREEN_WIDTH;
+              offsetX = 0;
+              offsetY = (photo.height - SCREEN_HEIGHT * scale) / 2;
+            }
+
+            const originX = Math.max(0, Math.round(guideScreenX * scale + offsetX));
+            const originY = Math.max(0, Math.round(guideScreenY * scale + offsetY));
+            const cropW   = Math.min(Math.round(CARD_WIDTH   * scale), photo.width  - originX);
+            const cropH   = Math.min(Math.round(TITLE_HEIGHT * scale), photo.height - originY);
+
             const cropped = await ImageManipulator.manipulateAsync(
               photo.uri,
-              [{ crop: { originX, originY, width: cropW, height: topCropH } }],
+              [{ crop: { originX, originY, width: cropW, height: cropH } }],
               { base64: true, format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
             );
 
@@ -725,8 +791,9 @@ export default function ScannerScreen() {
     return false;
   };
 
-  // Continuous background scanner hook
+  // Continuous background scanner — Single mode only
   useEffect(() => {
+    if (scanMode === "rapid") return; // rapid mode uses its own auto-capture loop below
     let timeoutId: ReturnType<typeof setTimeout>;
     const performAutoScan = async () => {
       if (!isMounted.current) return;
@@ -736,17 +803,145 @@ export default function ScannerScreen() {
       }
       try {
         const foundText = await captureManual(true);
-        // If no text, wait longer (3.5s) to "give camera some time"; otherwise stay at 2s
         const delay = foundText ? 2000 : 3500;
         if (isMounted.current) timeoutId = setTimeout(performAutoScan, delay);
       } catch (err) {
         console.error("AutoScan loop error:", err);
-        if (isMounted.current) timeoutId = setTimeout(performAutoScan, 5000); // Backoff on error
+        if (isMounted.current) timeoutId = setTimeout(performAutoScan, 5000);
       }
     };
     if (autoScan) performAutoScan();
     return () => clearTimeout(timeoutId);
-  }, [autoScan, isProcessing, scanning]);
+  }, [autoScan, isProcessing, scanning, scanMode]);
+
+  // ── Feature 3: Web stability detection (pixel comparison) ──────────────────
+  useEffect(() => {
+    if (!autoCaptureActive || !isWeb || scanMode !== "rapid" || !scanning) {
+      prevPixelsRef.current = null;
+      stableFramesRef.current = 0;
+      countdownAnim.setValue(0);
+      return;
+    }
+
+    const checkStability = () => {
+      if (!isMounted.current) return;
+      const video = videoRef.current;
+      const guide = guideRef.current as unknown as HTMLDivElement;
+      if (!video || !guide || !video.videoWidth) return;
+
+      try {
+        const rectV = video.getBoundingClientRect();
+        const rectG = guide.getBoundingClientRect();
+        const vW = video.videoWidth, vH = video.videoHeight;
+        const scaleX = vW / rectV.width;
+        const scaleY = vH / rectV.height;
+
+        // Down-sample to a small patch for speed (60×20 px)
+        const sampleW = 60, sampleH = 20;
+        const tmpCanvas = document.createElement("canvas");
+        tmpCanvas.width = sampleW;
+        tmpCanvas.height = sampleH;
+        const ctx = tmpCanvas.getContext("2d");
+        if (!ctx) return;
+
+        const sx = (rectG.left - rectV.left) * scaleX;
+        const sy = (rectG.top  - rectV.top)  * scaleY;
+        const sw = rectG.width  * scaleX;
+        const sh = rectG.height * scaleY;
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sampleW, sampleH);
+
+        const current = ctx.getImageData(0, 0, sampleW, sampleH).data;
+
+        if (prevPixelsRef.current && current.length === prevPixelsRef.current.length) {
+          let diff = 0;
+          for (let i = 0; i < current.length; i += 4) {
+            diff += Math.abs(current[i]     - prevPixelsRef.current[i]);
+            diff += Math.abs(current[i + 1] - prevPixelsRef.current[i + 1]);
+            diff += Math.abs(current[i + 2] - prevPixelsRef.current[i + 2]);
+          }
+          const avgDiff = diff / (sampleW * sampleH * 3);
+
+          if (avgDiff < 10) {
+            stableFramesRef.current = Math.min(stableFramesRef.current + 1, 3);
+          } else {
+            stableFramesRef.current = 0;
+          }
+        } else {
+          stableFramesRef.current = 0;
+        }
+
+        const progress = stableFramesRef.current / 3;
+        countdownAnim.setValue(progress);
+
+        if (stableFramesRef.current >= 3) {
+          // Stable for 1.5 s — fire!
+          stableFramesRef.current = 0;
+          prevPixelsRef.current = null;
+          countdownAnim.setValue(0);
+          captureManualRef.current(true);
+        } else {
+          prevPixelsRef.current = current;
+        }
+      } catch (_) {
+        // Security errors from cross-origin canvas etc. — ignore silently
+      }
+    };
+
+    const id = setInterval(checkStability, 500);
+    return () => {
+      clearInterval(id);
+      prevPixelsRef.current = null;
+      stableFramesRef.current = 0;
+      countdownAnim.setValue(0);
+    };
+  }, [autoCaptureActive, isWeb, scanMode, scanning]);
+
+  // ── Feature 3: Native countdown auto-capture ───────────────────────────────
+  useEffect(() => {
+    if (!autoCaptureActive || isWeb || scanMode !== "rapid" || !scanning) {
+      countdownAnim.stopAnimation();
+      countdownAnim.setValue(0);
+      return;
+    }
+
+    let cancelled = false;
+
+    const runCycle = () => {
+      if (cancelled || !isMounted.current) return;
+      countdownAnim.setValue(0);
+      Animated.timing(countdownAnim, {
+        toValue: 1,
+        duration: 1500,
+        useNativeDriver: false,
+      }).start(async ({ finished }) => {
+        if (!finished || cancelled || !isMounted.current) return;
+        await captureManualRef.current(true);
+        // Brief pause between captures so the queue can update
+        setTimeout(() => { if (!cancelled) runCycle(); }, 400);
+      });
+    };
+
+    runCycle();
+    return () => {
+      cancelled = true;
+      countdownAnim.stopAnimation();
+      countdownAnim.setValue(0);
+    };
+  }, [autoCaptureActive, isWeb, scanMode, scanning]);
+
+  // Auto-enable rapid auto-capture when switching to Rapid mode
+  useEffect(() => {
+    if (scanMode === "rapid") {
+      setAutoCaptureActive(true);
+    } else {
+      setAutoCaptureActive(false);
+      prevPixelsRef.current = null;
+      stableFramesRef.current = 0;
+    }
+  }, [scanMode]);
+
+  // Keep the ref in sync with the latest closure on every render
+  captureManualRef.current = captureManual;
 
   const filteredSets = setFilter.trim()
     ? setList.filter(s =>
@@ -759,7 +954,6 @@ export default function ScannerScreen() {
 
   const isNativePermGranted = permission?.granted;
   const isWebPermGranted = webPermissionGranted;
-  const isWeb = Platform.OS === "web";
   const canScan = !!selectedSet;
 
   if ((!isWeb && !permission) || (isWeb && webChecking)) {
@@ -960,9 +1154,12 @@ export default function ScannerScreen() {
           <View style={styles.overlayDim} />
           <View style={styles.overlayRow}>
             <View style={styles.overlayDim} />
-            <View 
-              ref={guideRef} 
-              style={styles.cardFrame}
+            <View
+              ref={guideRef}
+              style={[
+                styles.cardFrame,
+                autoCaptureActive && scanMode === "rapid" && styles.cardFrameActive,
+              ]}
             >
               <View style={styles.targetBoxTop}>
                 <Text style={styles.targetLabel}>Card Name Only</Text>
@@ -973,6 +1170,21 @@ export default function ScannerScreen() {
           <View style={[styles.overlayDim, { paddingTop: 20, alignItems: "center" }]}>
             <Text style={styles.frameHelper}>Webcams generally have fixed focus lenses.</Text>
             <Text style={styles.frameHelperSub}>Hold MTG card 8-12 inches away</Text>
+
+            {/* Stability progress bar — visible in Rapid mode with auto-capture on */}
+            {scanMode === "rapid" && autoCaptureActive && (
+              <View style={styles.stabilityBarContainer}>
+                <Animated.View style={[
+                  styles.stabilityBarFill,
+                  { width: countdownAnim.interpolate({ inputRange: [0, 1], outputRange: [0, CARD_WIDTH] }) },
+                ]} />
+              </View>
+            )}
+            {scanMode === "rapid" && autoCaptureActive && (
+              <Text style={styles.stabilityLabel}>
+                {isWeb ? "Hold card steady to auto-capture..." : "Auto-capturing..."}
+              </Text>
+            )}
           </View>
         </View>
 
@@ -1011,9 +1223,9 @@ export default function ScannerScreen() {
                   ${queueTotalValue.toFixed(2)}
                 </Text>
                 <Text style={styles.queueCount}>
-                  {rapidQueue.length === 0
-                    ? "Queue empty — start scanning"
-                    : `${rapidQueue.length} card${rapidQueue.length !== 1 ? "s" : ""} queued`}
+                  {rapidQueue.length === 0 && needsReview.length === 0
+                    ? "Queue empty — scanning…"
+                    : `${rapidQueue.length} queued${needsReview.length > 0 ? `  ·  ${needsReview.length} need review` : ""}`}
                 </Text>
               </View>
               {rapidQueue.length > 0 && (
@@ -1031,8 +1243,9 @@ export default function ScannerScreen() {
               <Text style={styles.queueToggleArrow}>{queueExpanded ? "▼" : "▲"}</Text>
             </Pressable>
 
-            {queueExpanded && rapidQueue.length > 0 && (
+            {queueExpanded && (rapidQueue.length > 0 || needsReview.length > 0) && (
               <ScrollView style={styles.queueList} showsVerticalScrollIndicator={false}>
+                {/* Confirmed cards */}
                 {rapidQueue.map(card => (
                   <View key={card.localId} style={styles.queueItem}>
                     {card.thumbUri ? (
@@ -1048,6 +1261,27 @@ export default function ScannerScreen() {
                     </Text>
                   </View>
                 ))}
+
+                {/* Review-needed items — shown below confirmed cards */}
+                {needsReview.map(item => (
+                  <Pressable
+                    key={item.localId}
+                    style={styles.reviewNeededItem}
+                    onPress={() => openReviewItem(item)}
+                  >
+                    <View style={[styles.queueThumb, styles.queueThumbPlaceholder]}>
+                      <Text style={{ color: "#f59e0b", fontSize: 16 }}>?</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.reviewNeededText} numberOfLines={1}>
+                        "{item.ocrText || "Unknown"}"
+                      </Text>
+                      <View style={styles.reviewNeededBadge}>
+                        <Text style={styles.reviewNeededBadgeText}>Review Needed — tap to fix</Text>
+                      </View>
+                    </View>
+                  </Pressable>
+                ))}
               </ScrollView>
             )}
           </View>
@@ -1056,15 +1290,29 @@ export default function ScannerScreen() {
         {/* Bottom Bar: Action Buttons */}
         <View style={styles.bottomBar}>
           <View style={styles.actionRow}>
-            <Pressable
-              style={[styles.captureBtn, autoScan && styles.captureBtnActive, !canScan && styles.btnDisabled]}
-              onPress={() => setAutoScan(!autoScan)}
-              disabled={!canScan}
-            >
-              <Text style={styles.captureBtnText}>
-                {autoScan ? "⏱ Auto-Scan: ON" : "⏱ Auto-Scan: OFF"}
-              </Text>
-            </Pressable>
+            {scanMode === "rapid" ? (
+              // Rapid mode: auto-capture toggle (motion/stability detection)
+              <Pressable
+                style={[styles.captureBtn, autoCaptureActive && styles.captureBtnActive, !canScan && styles.btnDisabled]}
+                onPress={() => setAutoCaptureActive(a => !a)}
+                disabled={!canScan}
+              >
+                <Text style={styles.captureBtnText}>
+                  {autoCaptureActive ? "⚡ Auto-Capture: ON" : "⚡ Auto-Capture: OFF"}
+                </Text>
+              </Pressable>
+            ) : (
+              // Single mode: original auto-scan toggle
+              <Pressable
+                style={[styles.captureBtn, autoScan && styles.captureBtnActive, !canScan && styles.btnDisabled]}
+                onPress={() => setAutoScan(!autoScan)}
+                disabled={!canScan}
+              >
+                <Text style={styles.captureBtnText}>
+                  {autoScan ? "⏱ Auto-Scan: ON" : "⏱ Auto-Scan: OFF"}
+                </Text>
+              </Pressable>
+            )}
 
             <Pressable
               style={[styles.manualBtn, !canScan && styles.btnDisabled]}
@@ -1211,8 +1459,19 @@ export default function ScannerScreen() {
                   );
                 })}
               </ScrollView>
-              <Pressable style={styles.resultCancelBtn} onPress={() => setReviewModalVisible(false)}>
-                <Text style={styles.resultCancelText}>Skip — Try scanning again</Text>
+              <Pressable
+                style={styles.resultCancelBtn}
+                onPress={() => {
+                  if (reviewingItem) {
+                    setNeedsReview(prev => prev.filter(r => r.localId !== reviewingItem.localId));
+                    setReviewingItem(null);
+                  }
+                  setReviewModalVisible(false);
+                }}
+              >
+                <Text style={styles.resultCancelText}>
+                  {reviewingItem ? "Skip — Remove from Review Queue" : "Skip — Try scanning again"}
+                </Text>
               </Pressable>
             </View>
           </View>
@@ -1547,6 +1806,66 @@ const styles = StyleSheet.create({
   debugImageContainer: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderColor: "#333344" },
   debugImgLabel: { color: "#606078", fontSize: 9, fontWeight: "800", marginBottom: 4, textTransform: "uppercase" },
   debugImg: { width: "100%", height: 40, backgroundColor: "#000", borderRadius: 4 },
+
+  // ── Review-Needed queue items (Feature 2) ──────────────────────────────────
+  reviewNeededItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderColor: "rgba(245,158,11,0.25)",
+    gap: 10,
+    backgroundColor: "rgba(245,158,11,0.06)",
+  },
+  reviewNeededText: {
+    color: "#f0f0f8",
+    fontSize: 12,
+    fontWeight: "600",
+    fontStyle: "italic",
+  },
+  reviewNeededBadge: {
+    alignSelf: "flex-start",
+    marginTop: 3,
+    backgroundColor: "rgba(245,158,11,0.18)",
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: "#f59e0b",
+  },
+  reviewNeededBadgeText: {
+    color: "#f59e0b",
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+
+  // ── Auto-capture stability bar (Feature 3) ─────────────────────────────────
+  cardFrameActive: {
+    borderColor: "#22c55e",
+  },
+  stabilityBarContainer: {
+    width: CARD_WIDTH,
+    height: 4,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: 2,
+    marginTop: 10,
+    overflow: "hidden",
+  },
+  stabilityBarFill: {
+    height: 4,
+    backgroundColor: "#22c55e",
+    borderRadius: 2,
+  },
+  stabilityLabel: {
+    color: "#22c55e",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 6,
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
 
   // Web side panel overrides
   resultModalBgWeb: { 
