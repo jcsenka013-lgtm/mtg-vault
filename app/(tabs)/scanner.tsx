@@ -387,6 +387,12 @@ export default function ScannerScreen() {
   useFocusEffect(
     useCallback(() => {
       setScanning(true);
+      // Clear result panel every time the scanner re-focuses so returning from
+      // the confirm screen doesn't leave stale candidates visible.
+      setResultModalVisible(false);
+      setResultCandidates([]);
+      setLastScanned(null);
+      cooldownRef.current = false;
       return () => {
         setScanning(false);
       };
@@ -559,10 +565,13 @@ export default function ScannerScreen() {
 
   const handleResultSelect = useCallback(async (tappedCard: ScryfallCard) => {
     setResultModalVisible(false);
+    // Snapshot candidates before clearing them for the navigation params
+    const snapshot = resultCandidates;
+    setResultCandidates([]);
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setPendingCard(null);
     // Put tapped card first so confirm screen shows it selected by default
-    const reordered = [tappedCard, ...resultCandidates.filter(c => c.id !== tappedCard.id)];
+    const reordered = [tappedCard, ...snapshot.filter(c => c.id !== tappedCard.id)];
     router.push({
       pathname: "/confirm",
       params: { candidates: JSON.stringify(reordered), sessionId: activeSession?.id ?? "" },
