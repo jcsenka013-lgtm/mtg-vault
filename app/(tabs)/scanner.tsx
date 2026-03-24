@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Dimensions,
   Modal,
+  FlatList,
   ScrollView,
   TextInput,
   Image,
@@ -239,6 +240,62 @@ function stringSimilarity(a: string, b: string): number {
 
   return Math.max(levScore, prefixScore);
 }
+
+// ── Memoized queue row components (prevent re-renders when new cards are added) ─
+type QueueListItem =
+  | { type: "card";   data: QueuedCard }
+  | { type: "review"; data: ReviewNeededItem };
+
+interface QueueItemRowProps {
+  item: QueueListItem;
+  onReview: (item: ReviewNeededItem) => void;
+}
+
+const QueueItemRow = React.memo(function QueueItemRow({ item, onReview }: QueueItemRowProps) {
+  if (item.type === "card") {
+    const card = item.data;
+    return (
+      <View style={queueRowStyles.item}>
+        {card.thumbUri
+          ? <Image source={{ uri: card.thumbUri }} style={queueRowStyles.thumb} />
+          : <View style={[queueRowStyles.thumb, queueRowStyles.thumbPlaceholder]}>
+              <Text style={{ color: "#606078" }}>🃏</Text>
+            </View>
+        }
+        <Text style={queueRowStyles.name} numberOfLines={1}>{card.name}</Text>
+        <Text style={queueRowStyles.price}>
+          {card.priceUsd ? `$${card.priceUsd.toFixed(2)}` : "—"}
+        </Text>
+      </View>
+    );
+  }
+  const rev = item.data;
+  return (
+    <Pressable style={queueRowStyles.reviewItem} onPress={() => onReview(rev)}>
+      <View style={[queueRowStyles.thumb, queueRowStyles.thumbPlaceholder]}>
+        <Text style={{ color: "#f59e0b", fontSize: 16 }}>?</Text>
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={queueRowStyles.reviewText} numberOfLines={1}>"{rev.ocrText || "Unknown"}"</Text>
+        <View style={queueRowStyles.reviewBadge}>
+          <Text style={queueRowStyles.reviewBadgeText}>Review Needed — tap to fix</Text>
+        </View>
+      </View>
+    </Pressable>
+  );
+});
+
+const queueRowStyles = StyleSheet.create({
+  item:             { flexDirection: "row", alignItems: "center", paddingVertical: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderColor: "#12121a" },
+  thumb:            { width: 36, height: 36, borderRadius: 4, marginRight: 10 },
+  thumbPlaceholder: { backgroundColor: "#1a1a26", alignItems: "center", justifyContent: "center" },
+  name:             { flex: 1, color: "#e0e0f0", fontSize: 13, fontWeight: "600" },
+  price:            { color: "#c89b3c", fontSize: 12, fontWeight: "700", marginLeft: 6 },
+  reviewItem:       { flexDirection: "row", alignItems: "center", paddingVertical: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderColor: "#12121a" },
+  reviewText:       { color: "#f59e0b", fontSize: 13 },
+  reviewBadge:      { marginTop: 2 },
+  reviewBadgeText:  { color: "#a0601a", fontSize: 11, fontWeight: "700" },
+});
 
 export default function ScannerScreen() {
   const isFocused = useIsFocused();
@@ -768,6 +825,7 @@ export default function ScannerScreen() {
           }
 
           const { data: { text } } = await workerRef.current.recognize(base64Data);
+          setDebugImage(null); // discard base64 from state immediately after OCR
           console.log("--- WEB OCR DEBUG (BoundRect Mapping) ---");
           console.log("Video Size:", vW, "x", vH);
           console.log("Display Rect:", rectV.width.toFixed(0), "x", rectV.height.toFixed(0));
@@ -832,6 +890,7 @@ export default function ScannerScreen() {
             if (cropped.base64) setDebugImage(`data:image/jpeg;base64,${cropped.base64}`);
             if (!workerRef.current) return false;
             const { data: { text } } = await workerRef.current.recognize(`data:image/jpeg;base64,${cropped.base64}`);
+            setDebugImage(null); // discard base64 from state immediately after OCR
             console.log("--- NATIVE OCR DEBUG ---");
             console.log("Photo Size:", photo.width, "x", photo.height);
             console.log("OCR Text Extracted:\n", text);
@@ -1342,45 +1401,17 @@ export default function ScannerScreen() {
             </Pressable>
 
             {queueExpanded && (rapidQueue.length > 0 || needsReview.length > 0) && (
-              <ScrollView style={styles.queueList} showsVerticalScrollIndicator={false}>
-                {/* Confirmed cards */}
-                {rapidQueue.map(card => (
-                  <View key={card.localId} style={styles.queueItem}>
-                    {card.thumbUri ? (
-                      <Image source={{ uri: card.thumbUri }} style={styles.queueThumb} />
-                    ) : (
-                      <View style={[styles.queueThumb, styles.queueThumbPlaceholder]}>
-                        <Text style={{ color: "#606078" }}>🃏</Text>
-                      </View>
-                    )}
-                    <Text style={styles.queueItemName} numberOfLines={1}>{card.name}</Text>
-                    <Text style={styles.queueItemPrice}>
-                      {card.priceUsd ? `$${card.priceUsd.toFixed(2)}` : "—"}
-                    </Text>
-                  </View>
-                ))}
-
-                {/* Review-needed items — shown below confirmed cards */}
-                {needsReview.map(item => (
-                  <Pressable
-                    key={item.localId}
-                    style={styles.reviewNeededItem}
-                    onPress={() => openReviewItem(item)}
-                  >
-                    <View style={[styles.queueThumb, styles.queueThumbPlaceholder]}>
-                      <Text style={{ color: "#f59e0b", fontSize: 16 }}>?</Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.reviewNeededText} numberOfLines={1}>
-                        "{item.ocrText || "Unknown"}"
-                      </Text>
-                      <View style={styles.reviewNeededBadge}>
-                        <Text style={styles.reviewNeededBadgeText}>Review Needed — tap to fix</Text>
-                      </View>
-                    </View>
-                  </Pressable>
-                ))}
-              </ScrollView>
+              <FlatList<QueueListItem>
+                style={styles.queueList}
+                data={[
+                  ...rapidQueue.map(c => ({ type: "card"   as const, data: c })),
+                  ...needsReview.map(r => ({ type: "review" as const, data: r })),
+                ]}
+                keyExtractor={item => item.data.localId}
+                renderItem={({ item }) => <QueueItemRow item={item} onReview={openReviewItem} />}
+                showsVerticalScrollIndicator={false}
+                removeClippedSubviews
+              />
             )}
           </View>
         )}
