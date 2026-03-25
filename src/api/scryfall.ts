@@ -18,17 +18,26 @@ const scryfallClient = axios.create({
 
 // Rate-limit helper: Scryfall asks for max 10 req/s
 let lastRequestTime = 0;
-const MIN_REQUEST_GAP_MS = 100;
+const MIN_REQUEST_GAP_MS = 150;
 
-async function rateLimitedGet<T>(url: string, params?: Record<string, string>): Promise<T> {
+async function rateLimitedGet<T>(url: string, params?: Record<string, string>, retries = 1): Promise<T> {
   const now = Date.now();
   const gap = now - lastRequestTime;
   if (gap < MIN_REQUEST_GAP_MS) {
     await new Promise((r) => setTimeout(r, MIN_REQUEST_GAP_MS - gap));
   }
   lastRequestTime = Date.now();
-  const response = await scryfallClient.get<T>(url, { params });
-  return response.data;
+  try {
+    const response = await scryfallClient.get<T>(url, { params });
+    return response.data;
+  } catch (error: any) {
+    if (error.response?.status === 429 && retries > 0) {
+      console.warn("Scryfall 429 Too Many Requests: Rate limited. Sleeping 2 seconds...");
+      await new Promise((r) => setTimeout(r, 2000));
+      return rateLimitedGet<T>(url, params, retries - 1);
+    }
+    throw error;
+  }
 }
 
 export async function searchCardByName(name: string): Promise<ScryfallCard[]> {

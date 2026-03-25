@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useDebounce } from "@hooks/useDebounce";
 import {
   View, Text, Pressable, ScrollView, StyleSheet,
-  ActivityIndicator, TextInput, Modal,
+  ActivityIndicator, TextInput, Modal, Platform
 } from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import Tesseract from "tesseract.js";
 import {
   autocompleteCardName,
@@ -62,6 +64,7 @@ type DragState = { mode: DragMode; startNX: number; startNY: number; origBox: BB
 type ScanResult = {
   index: number;
   thumbDataUrl: string;
+  ocrDataUrl: string;
   rawOcr: string;
   extractedName: string;
   status: "identified" | "review" | "empty";
@@ -97,17 +100,111 @@ function similarity(a: string, b: string): number {
   return Math.max(levScore, prefixScore);
 }
 
-function extractName(text: string): string {
-  return text.replace(/\n+/g, " ").replace(/[^a-zA-Z\s'\-]/g, " ").replace(/\s\s+/g, " ").trim();
+/** Draw original photo with crop bbox + grid lines overlaid, returns a data URL */
+function drawPhotoWithGrid(src: HTMLCanvasElement, bbox: BBox, rows: number, cols: number): string {
+  const maxW = 1200;
+  const scale = Math.min(1, maxW / src.width);
+  const W = Math.round(src.width * scale);
+  const H = Math.round(src.height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d")!;
+  ctx.drawImage(src, 0, 0, W, H);
+
+  const bx = bbox.x * W, by = bbox.y * H;
+  const bw = bbox.w * W, bh = bbox.h * H;
+
+  // Dim area outside the binder crop zone
+  ctx.fillStyle = "rgba(0,0,0,0.48)";
+  ctx.fillRect(0, 0, W, by);
+  ctx.fillRect(0, by + bh, W, H - by - bh);
+  ctx.fillRect(0, by, bx, bh);
+  ctx.fillRect(bx + bw, by, W - bx - bw, bh);
+
+  // Crop boundary
+  ctx.strokeStyle = "#c89b3c";
+  ctx.lineWidth = 3;
+  ctx.strokeRect(bx + 1, by + 1, bw - 2, bh - 2);
+
+  // Dashed grid lines
+  const cellW = bw / cols, cellH = bh / rows;
+  ctx.strokeStyle = "rgba(200,155,60,0.85)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([8, 5]);
+  for (let c2 = 1; c2 < cols; c2++) {
+    const x = bx + cellW * c2;
+    ctx.beginPath(); ctx.moveTo(x, by); ctx.lineTo(x, by + bh); ctx.stroke();
+  }
+  for (let r = 1; r < rows; r++) {
+    const y = by + cellH * r;
+    ctx.beginPath(); ctx.moveTo(bx, y); ctx.lineTo(bx + bw, y); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Cell index labels
+  const fontSize = Math.max(14, Math.min(cellW, cellH) * 0.15);
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (let r = 0; r < rows; r++) {
+    for (let c2 = 0; c2 < cols; c2++) {
+      const cx = bx + c2 * cellW + cellW / 2;
+      const cy = by + r * cellH + cellH / 2;
+      ctx.fillStyle = "rgba(0,0,0,0.55)";
+      ctx.fillText(String(r * cols + c2 + 1), cx + 1, cy + 1);
+      ctx.fillStyle = "#c89b3c";
+      ctx.fillText(String(r * cols + c2 + 1), cx, cy);
+    }
+  }
+
+  return canvas.toDataURL("image/jpeg", 0.75);
 }
 
-/** Downscale a photo to maxW pixels wide (preserving aspect ratio). */
-function prescaleImage(img: HTMLImageElement, maxW = 2000): HTMLCanvasElement {
-  const scale = Math.min(1, maxW / img.naturalWidth);
+const COLLECTOR_PATTERN = /(?:#|^\s*)?(\d{1,4}[A-Za-z]?)(?:\s|$)/;
+const SET_CODE_PATTERN = /\b([A-Z0-9]{3,4})\b/i;
+
+function extractCardInfo(text: string): { name: string; collectorNumber?: string } | null {
+  const collapsed = text.replace(/\n+/g, " ");
+  const cleanedText = collapsed.replace(/[^a-zA-Z\s'\-]/g, " ").replace(/\s\s+/g, " ").trim();
+  const lines = cleanedText.split("\n").map((l) => l.trim()).filter((l) => l.length > 2);
+  
+  if (lines.length === 0) return null;
+
+  let collectorNumber: string | undefined;
+  for (const line of lines) {
+    const match = line.match(COLLECTOR_PATTERN);
+    if (match) { collectorNumber = match[1]; break; }
+  }
+
+  const nameLine = lines.find(line => 
+    !COLLECTOR_PATTERN.test(line) && 
+    /[a-zA-Z]{3,}/.test(line) &&
+    !SET_CODE_PATTERN.test(line)
+  );
+
+  const finalName = nameLine || lines[0];
+  return { 
+    name: finalName ? finalName.replace(/[^a-zA-Z\s'-]/g, "").trim() : "", 
+    collectorNumber 
+  };
+}
+
+/** Downscale a photo or video to maxW pixels wide (preserving aspect ratio). */
+function prescaleImage(img: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement, maxW = 2000): HTMLCanvasElement {
+  // Determine intrinsic dimensions based on element type
+  const width = 'videoWidth' in img ? img.videoWidth : ('naturalWidth' in img ? img.naturalWidth : img.width);
+  const height = 'videoHeight' in img ? img.videoHeight : ('naturalHeight' in img ? img.naturalHeight : img.height);
+
+  const scale = Math.min(1, maxW / width);
   const c = document.createElement("canvas");
-  c.width  = Math.round(img.naturalWidth  * scale);
-  c.height = Math.round(img.naturalHeight * scale);
-  c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+  c.width  = Math.round(width  * scale);
+  c.height = Math.round(height * scale);
+  
+  const ctx = c.getContext("2d")!;
+  // Draw an opaque background just in case
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.drawImage(img, 0, 0, c.width, c.height);
   return c;
 }
 
@@ -147,8 +244,21 @@ export default function BinderScreen() {
   const [reviewSearching,  setReviewSearching]   = useState(false);
   const [committing,       setCommitting]        = useState(false);
 
-  const workerRef   = useRef<any>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Binder view
+  const [originalPhotos,    setOriginalPhotos]   = useState<string[]>([]);
+  const [totalCells,        setTotalCells]       = useState(0);
+  const [showOriginalPhoto, setShowOriginalPhoto] = useState(false);
+
+  // Camera integration
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [permission, requestPermission] = useCameraPermissions();
+  const [webPermissionGranted, setWebPermissionGranted] = useState(false);
+  const cameraRef = useRef<CameraView>(null);
+  const videoRef = useRef<any>(null);
+
+  const workerRef      = useRef<any>(null);
+  const fileInputRef   = useRef<HTMLInputElement | null>(null);
+  const abortSearchRef = useRef<AbortController | null>(null);
 
   // ── Init ────────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -171,6 +281,71 @@ export default function BinderScreen() {
     });
     return () => { active = false; workerRef.current?.terminate(); };
   }, []);
+
+  // ── Web Camera lifecycle ─────────────────────────────────────────────────────
+  useEffect(() => {
+    let activeStream: MediaStream | null = null;
+    if (Platform.OS === "web" && webPermissionGranted && cameraOpen) {
+      navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }
+      }).then(stream => {
+        activeStream = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        } else {
+          stream.getTracks().forEach(t => t.stop());
+        }
+      }).catch(err => {
+        console.error("Webcam error:", err);
+        setWebPermissionGranted(false);
+      });
+    }
+    return () => {
+      if (activeStream) activeStream.getTracks().forEach(t => t.stop());
+      if (Platform.OS === "web" && videoRef.current && videoRef.current.srcObject) {
+         videoRef.current.srcObject.getTracks().forEach((t: any) => t.stop());
+         videoRef.current.srcObject = null;
+      }
+    };
+  }, [webPermissionGranted, cameraOpen]);
+
+  // ── Debounced autocomplete: fire search 500 ms after the user stops typing ───
+  const debouncedReviewSearch = useDebounce(reviewSearch, 500);
+  useEffect(() => {
+    if (!debouncedReviewSearch.trim() || reviewIdx === null) return;
+    handleReviewSearch(debouncedReviewSearch);
+  }, [debouncedReviewSearch, reviewIdx]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Capture Photo ────────────────────────────────────────────────────────────
+  const handleCapturePhoto = async () => {
+    try {
+      if (Platform.OS === "web") {
+        const video = videoRef.current;
+        if (!video || !video.videoWidth || video.readyState < 3) {
+           alert("Camera is warming up. Please wait a second and try again.");
+           return;
+        }
+        // Directly pass the video element to prescaleImage which draws the current frame
+        setCropQueue(prev => [...prev, { prescaled: prescaleImage(video, 2000) }]);
+      } else {
+        if (cameraRef.current) {
+          const photo = await cameraRef.current.takePictureAsync({ base64: true });
+          if (photo?.base64) {
+            const dataUrl = `data:image/jpeg;base64,${photo.base64}`;
+            const img = await new Promise<HTMLImageElement>(res => {
+              const el = new (window as any).Image() as HTMLImageElement;
+              el.onload = () => res(el);
+              el.src = dataUrl;
+            });
+            setCropQueue(prev => [...prev, { prescaled: prescaleImage(img, 2000) }]);
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Capture failed", e);
+      alert("Failed to capture image.");
+    }
+  };
 
   // ── Crop canvas: sync box ref + expose setter ────────────────────────────────
   const updateCropBox = useCallback((box: BBox) => {
@@ -237,6 +412,25 @@ export default function BinderScreen() {
       for (let r = 1; r < gridPreset.rows; r++) {
         const y = by + bh * (r / gridPreset.rows);
         ctx.beginPath(); ctx.moveTo(bx, y); ctx.lineTo(bx + bw, y); ctx.stroke();
+      }
+    }
+
+    // Title Guide Overlays
+    ctx.fillStyle = "rgba(34, 197, 94, 0.15)";
+    ctx.strokeStyle = "rgba(34, 197, 94, 0.45)";
+    ctx.lineWidth = 1;
+    const cellW = bw / gridPreset.cols;
+    const cellH = bh / gridPreset.rows;
+    for (let r = 0; r < gridPreset.rows; r++) {
+      for (let c = 0; c < gridPreset.cols; c++) {
+        const cx = bx + c * cellW;
+        const cy = by + r * cellH;
+        const txtX = cx + cellW * 0.08;
+        const txtY = cy + cellH * 0.02;
+        const txtW = cellW * 0.82;
+        const txtH = cellH * 0.16;
+        ctx.fillRect(txtX, txtY, txtW, txtH);
+        ctx.strokeRect(txtX, txtY, txtW, txtH);
       }
     }
   }, [cropBox, cropQueueIdx, cropQueue, gridPreset]);
@@ -365,6 +559,9 @@ export default function BinderScreen() {
     setProcessing(true);
     setResults([]);
     setProgress({ current: 0, total });
+    setTotalCells(total);
+    setShowOriginalPhoto(false);
+    setOriginalPhotos(crops.map(c => drawPhotoWithGrid(c.prescaled, c.bbox, rows, cols)));
 
     const allResults: (ScanResult | null)[] = new Array(total).fill(null);
     let completed = 0;
@@ -445,15 +642,18 @@ export default function BinderScreen() {
     }
     ctx.putImageData(id, 0, 0);
 
-    let rawOcr = "", extractedName = "";
+    const ocrDataUrl = ocrCanvas.toDataURL("image/jpeg", 0.95);
+    let rawOcr = "", extractedName = "", collectorNumber = "";
     try {
-      const { data: { text } } = await workerRef.current!.recognize(ocrCanvas.toDataURL("image/jpeg", 0.95));
+      const { data: { text } } = await workerRef.current!.recognize(ocrDataUrl);
       rawOcr = text;
-      extractedName = extractName(text);
+      const info = extractCardInfo(text);
+      if (info?.name) extractedName = info.name;
+      if (info?.collectorNumber) collectorNumber = info.collectorNumber;
     } catch { /* skip */ }
 
     if (!extractedName || extractedName.length < 3) {
-      return { index, thumbDataUrl, rawOcr, extractedName, status: "empty", card: null, candidates: [], reviewName: "" };
+      return { index, thumbDataUrl, ocrDataUrl, rawOcr, extractedName, status: "empty", card: null, candidates: [], reviewName: "" };
     }
 
     const sanitized = extractedName.replace(/[^a-zA-Z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -464,54 +664,67 @@ export default function BinderScreen() {
     if (localCards.length > 0) {
       const local = localCards
         .map(c => ({ card: c, score: similarity(sanitized, c.name) }))
-        .filter(m => m.score > 0.4)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 5);
-      if (local.length > 0 && local[0].score > 0.85) {
-        card = local[0].card;
-        candidates = local.map(m => m.card);
+        .sort((a, b) => b.score - a.score);
+      
+      const goodMatches = local.filter(m => m.score > 0.4).slice(0, 5);
+      
+      if (goodMatches.length > 0 && goodMatches[0].score > 0.85) {
+        card = goodMatches[0].card;
+        candidates = goodMatches.map(m => m.card);
+      } else {
+        // Even if we fail to auto-identify, populate top 3 locals into candidates for the Fix menu
+        candidates = local.slice(0, 3).map(m => m.card);
       }
     }
 
-    // B. Autocomplete spell-check (throttled)
+    // B. Autocomplete spell-check
     if (!card) {
       try {
-        const sugg = await throttledApi(() => autocompleteCardName(sanitized));
+        const sugg = await autocompleteCardName(sanitized);
         if (sugg[0]) {
-          const res = await throttledApi(() => searchCardByNameInSet(sugg[0], setCode));
+          const res = await searchCardByNameInSet(sugg[0], setCode);
           if (res.length > 0) { card = res[0]; candidates = res; }
         }
       } catch { /* non-fatal */ }
     }
 
-    // C. Direct search (throttled)
+    // C. Direct search
     if (!card) {
       try {
-        const res = await throttledApi(() => searchCardByNameInSet(sanitized, setCode));
+        const res = await searchCardByNameInSet(sanitized, setCode);
         if (res.length > 0) { card = res[0]; candidates = res; }
       } catch { /* non-fatal */ }
     }
 
     return {
-      index, thumbDataUrl, rawOcr, extractedName,
+      index, thumbDataUrl, ocrDataUrl, rawOcr, extractedName,
       status: card ? "identified" : "review",
       card, candidates, reviewName: extractedName,
     };
   };
 
   // ── Review modal helpers ──────────────────────────────────────────────────────
-  const handleReviewSearch = async (query: string) => {
+  const handleReviewSearch = useCallback(async (query: string) => {
     if (!query.trim() || !selectedSet) return;
+
+    // Cancel any in-flight request from the previous keystroke burst
+    abortSearchRef.current?.abort();
+    abortSearchRef.current = new AbortController();
+    const { signal } = abortSearchRef.current;
+
     setReviewSearching(true);
     try {
       const sugg = await throttledApi(() => autocompleteCardName(query));
-      const res = await throttledApi(() =>
-        searchCardByNameInSet(sugg[0] ?? query, selectedSet.code)
-      );
+      if (signal.aborted) return;
+      const res  = await throttledApi(() => searchCardByNameInSet(sugg[0] ?? query, selectedSet.code));
+      if (signal.aborted) return;
       setReviewCandidates(res.slice(0, 8));
-    } catch { setReviewCandidates([]); }
-    finally { setReviewSearching(false); }
-  };
+    } catch (err: any) {
+      if (!signal.aborted) setReviewCandidates([]);
+    } finally {
+      if (!signal.aborted) setReviewSearching(false);
+    }
+  }, [selectedSet]);
 
   const applyReviewCard = (card: ScryfallCard) => {
     if (reviewIdx === null) return;
@@ -585,8 +798,47 @@ export default function BinderScreen() {
         onChange={e => handleFilesSelected((e.target as HTMLInputElement).files)}
       />
 
+      {/* ── Camera Overlay (Full-screen when scanning pages) ── */}
+      {cameraOpen && (
+        <View style={styles.cameraOverlay}>
+          {Platform.OS === "web" ? (
+             <video
+               ref={videoRef}
+               autoPlay playsInline muted
+               style={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", zIndex: 0 } as any}
+             />
+          ) : (
+            <CameraView
+              ref={cameraRef}
+              style={StyleSheet.absoluteFillObject}
+              facing="back"
+            />
+          )}
+
+          <View style={[styles.cameraTop, { zIndex: 10 }]}>
+             <Pressable style={styles.cameraCloseBtn} onPress={() => setCameraOpen(false)}>
+               <Text style={styles.cameraCloseText}>✕ Cancel</Text>
+             </Pressable>
+             <View style={styles.cameraBadge}>
+               <Text style={styles.cameraBadgeText}>{cropQueue.length} Taken</Text>
+             </View>
+             {cropQueue.length > 0 ? (
+               <Pressable style={styles.cameraDoneBtn} onPress={() => { setCameraOpen(false); setCropQueueIdx(0); }}>
+                 <Text style={styles.cameraDoneBtnText}>Done</Text>
+               </Pressable>
+             ) : <View style={{ width: 80 }} />}
+          </View>
+
+          <View style={[styles.cameraBottom, { zIndex: 10 }]}>
+            <Pressable style={styles.cameraCaptureBtn} onPress={handleCapturePhoto}>
+              <View style={styles.cameraCaptureInner} />
+            </Pressable>
+          </View>
+        </View>
+      )}
+
       {/* ── Crop overlay (full-screen, shows per uploaded photo) ── */}
-      {cropQueue.length > 0 && (
+      {cropQueue.length > 0 && !cameraOpen && (
         <View style={styles.cropOverlay}>
           <View style={styles.cropHeader}>
             <Text style={styles.cropTitle}>
@@ -642,117 +894,179 @@ export default function BinderScreen() {
           </View>
         </View>
 
-        {/* Upload button */}
+        {/* Actions */}
         {!processing && results.length === 0 && (
-          <Pressable
-            style={[styles.uploadBtn, !selectedSet && styles.uploadBtnDisabled]}
-            onPress={() => selectedSet && (fileInputRef.current as any)?.click()}
-            disabled={!selectedSet}
-          >
-            <Text style={styles.uploadEmoji}>📖</Text>
-            <Text style={styles.uploadTitle}>Upload Binder Photos</Text>
-            <Text style={styles.uploadSub}>
-              {selectedSet
-                ? `Select one or more photos · ${gridPreset.rows}×${gridPreset.cols} grid per page`
-                : "Select a set first"}
-            </Text>
-          </Pressable>
+          !selectedSet ? (
+            <Pressable
+              style={[styles.uploadBtn, { borderColor: ACCENT, backgroundColor: "rgba(200,155,60,0.08)" }]}
+              onPress={() => setSetPickerOpen(true)}
+            >
+              <Text style={styles.uploadEmoji}>🔍</Text>
+              <Text style={[styles.uploadTitle, { color: ACCENT }]}>Step 1: Select a Set</Text>
+              <Text style={styles.uploadSub}>Tap here to choose which Magic set you are scanning</Text>
+            </Pressable>
+          ) : (
+            <View style={styles.actionsRow}>
+              <Pressable
+                style={styles.actionBtnCamera}
+                onPress={async () => {
+                  if (Platform.OS === "web") {
+                    try {
+                      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                      stream.getTracks().forEach(t => t.stop());
+                      setWebPermissionGranted(true);
+                      setCameraOpen(true);
+                    } catch (e) { alert("Camera permission denied."); }
+                  } else {
+                    if (!permission?.granted) await requestPermission();
+                    setCameraOpen(true);
+                  }
+                }}
+              >
+                <Text style={styles.actionBtnEmoji}>📸</Text>
+                <Text style={styles.actionBtnTitle}>Take Photos</Text>
+              </Pressable>
+              
+              <Pressable
+                style={styles.actionBtnUpload}
+                onPress={() => (fileInputRef.current as any)?.click()}
+              >
+                <Text style={styles.actionBtnEmoji}>📖</Text>
+                <Text style={styles.actionBtnTitleUpload}>Upload Files</Text>
+              </Pressable>
+            </View>
+          )
         )}
 
-        {/* Results summary + cards */}
+        {/* ── Binder results ── */}
         {results.length > 0 && (
           <>
+            {/* Top status bar */}
             <View style={styles.summaryRow}>
               <View style={[styles.summaryBadge, { backgroundColor: "rgba(34,197,94,0.15)", borderColor: GREEN }]}>
-                <Text style={[styles.summaryBadgeText, { color: GREEN }]}>✓ {identifiedCards.length} identified</Text>
+                <Text style={[styles.summaryBadgeText, { color: GREEN }]}>✓ {identifiedCards.length}</Text>
               </View>
               {reviewCards.length > 0 && (
-                <View style={[styles.summaryBadge, { backgroundColor: "rgba(245,158,11,0.15)", borderColor: YELLOW }]}>
-                  <Text style={[styles.summaryBadgeText, { color: YELLOW }]}>⚠ {reviewCards.length} need review</Text>
+                <View style={[styles.summaryBadge, { backgroundColor: "rgba(249,115,22,0.15)", borderColor: "#f97316" }]}>
+                  <Text style={[styles.summaryBadgeText, { color: "#f97316" }]}>! {reviewCards.length} need fix</Text>
                 </View>
               )}
+              <Pressable
+                style={[styles.viewPhotoBtn, showOriginalPhoto && styles.viewPhotoBtnActive]}
+                onPress={() => setShowOriginalPhoto(v => !v)}
+              >
+                <Text style={styles.viewPhotoBtnText}>{showOriginalPhoto ? "Hide Photo" : "View Photo"}</Text>
+              </Pressable>
               {!processing && (
-                <Pressable style={styles.rescanBtn} onPress={() => setResults([])}>
-                  <Text style={styles.rescanBtnText}>↺ New Scan</Text>
+                <Pressable style={styles.rescanBtn} onPress={() => { setResults([]); setOriginalPhotos([]); }}>
+                  <Text style={styles.rescanBtnText}>↺ New</Text>
                 </Pressable>
               )}
             </View>
 
-            {/* Identified grid */}
-            {identifiedCards.length > 0 && (
-              <>
-                <Text style={styles.sectionLabel}>Identified</Text>
-                <View style={styles.cardGrid}>
-                  {identifiedCards.map((r, i) => (
-                    <View key={i} style={styles.cardCell}>
-                      <View style={styles.cardCellInner}>
-                        <img
-                          src={r.thumbDataUrl}
-                          style={{ width: "100%", height: 80, objectFit: "cover", borderRadius: 6 } as any}
-                          alt=""
-                        />
-                        <Text style={styles.cardCellName} numberOfLines={2}>{r.card?.name ?? r.extractedName}</Text>
-                        <Pressable style={styles.removeBtn} onPress={() => removeResult(r.index)}>
-                          <Text style={styles.removeBtnText}>×</Text>
-                        </Pressable>
-                      </View>
-                    </View>
-                  ))}
-                </View>
-              </>
-            )}
-
-            {/* Review list */}
-            {reviewCards.length > 0 && (
-              <>
-                <Text style={styles.sectionLabel}>Need Review</Text>
-                {reviewCards.map((r, i) => (
-                  <View key={i} style={styles.reviewItem}>
+            {/* Original photo context view */}
+            {showOriginalPhoto && originalPhotos.length > 0 && (
+              <View style={styles.originalPhotoSection}>
+                {originalPhotos.map((url, pi) => (
+                  <View key={pi} style={styles.originalPhotoWrapper}>
+                    {originalPhotos.length > 1 && (
+                      <Text style={styles.originalPhotoLabel}>Page {pi + 1}</Text>
+                    )}
                     <img
-                      src={r.thumbDataUrl}
-                      style={{ width: 60, height: 44, objectFit: "cover", borderRadius: 6, flexShrink: 0 } as any}
-                      alt=""
+                      src={url}
+                      style={{ width: "100%", borderRadius: 10, display: "block" } as any}
+                      alt={`Binder page ${pi + 1}`}
                     />
-                    <View style={styles.reviewItemMid}>
-                      <Text style={styles.reviewItemOcr} numberOfLines={1}>OCR: "{r.extractedName || "—"}"</Text>
-                    </View>
-                    <View style={styles.reviewItemActions}>
-                      <Pressable
-                        style={styles.fixBtn}
-                        onPress={() => {
-                          setReviewIdx(results.indexOf(r));
-                          setReviewSearch(r.extractedName);
-                          setReviewCandidates(r.candidates);
-                        }}
-                      >
-                        <Text style={styles.fixBtnText}>Fix</Text>
-                      </Pressable>
-                      <Pressable style={styles.skipBtn} onPress={() => removeResult(r.index)}>
-                        <Text style={styles.skipBtnText}>Skip</Text>
-                      </Pressable>
-                    </View>
                   </View>
                 ))}
-              </>
+              </View>
             )}
 
-            {/* Commit */}
-            {identifiedCards.length > 0 && !processing && (
-              <Pressable
-                style={[styles.commitBtn, (!activeSession || committing) && styles.commitBtnDisabled]}
-                onPress={handleCommit}
-                disabled={!activeSession || committing}
-              >
-                {committing
-                  ? <ActivityIndicator color="#0a0a0f" />
-                  : <Text style={styles.commitBtnText}>
-                      {activeSession
-                        ? `✓ Add ${identifiedCards.length} Card${identifiedCards.length !== 1 ? "s" : ""} to "${activeSession.name}"`
-                        : "⚠ No active session — go to Collection first"}
-                    </Text>
-                }
-              </Pressable>
-            )}
+            {/* Physical binder grid pages */}
+            {!showOriginalPhoto && originalPhotos.map((_, pageIdx) => {
+              const cellsPerPage = gridPreset.rows * gridPreset.cols;
+              const pageStart = pageIdx * cellsPerPage;
+              return (
+                <View key={pageIdx} style={styles.binderPage}>
+                  {/* Ring holes */}
+                  <View style={styles.binderRingsRow}>
+                    {Array.from({ length: Math.max(3, gridPreset.cols) }).map((_, ri) => (
+                      <View key={ri} style={styles.binderRingHole} />
+                    ))}
+                  </View>
+
+                  {/* Card pocket grid */}
+                  <View style={styles.binderGrid}>
+                    {Array.from({ length: gridPreset.rows }).map((_, rowIdx) => (
+                      <View key={rowIdx} style={styles.binderRow}>
+                        {Array.from({ length: gridPreset.cols }).map((_, colIdx) => {
+                          const cellIndex = pageStart + rowIdx * gridPreset.cols + colIdx;
+                          const r = results.find(res => res.index === cellIndex);
+                          const isSuccess = r?.status === "identified";
+                          const isReview  = r?.status === "review";
+                          const stillProcessing = processing && !r;
+                          const cardImg =
+                            r?.card?.image_uris?.small ??
+                            r?.card?.card_faces?.[0]?.image_uris?.small ??
+                            null;
+
+                          return (
+                            <Pressable
+                              key={colIdx}
+                              style={[
+                                styles.pocket,
+                                isSuccess && styles.pocketSuccess,
+                                isReview  && styles.pocketReview,
+                              ]}
+                              onPress={() => {
+                                if (!isReview || !r) return;
+                                setReviewIdx(results.indexOf(r));
+                                setReviewSearch(r.extractedName);
+                                setReviewCandidates(r.candidates);
+                              }}
+                              disabled={!isReview}
+                            >
+                              {/* Card image */}
+                              {(isSuccess || isReview) && (
+                                <img
+                                  src={isSuccess && cardImg ? cardImg : r!.thumbDataUrl}
+                                  style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 5, display: "block" } as any}
+                                  alt=""
+                                />
+                              )}
+
+                              {/* Empty / loading */}
+                              {!r && (
+                                stillProcessing
+                                  ? <ActivityIndicator color={ACCENT} size="small" style={{ flex: 1 }} />
+                                  : <View style={styles.emptyPocket} />
+                              )}
+
+                              {/* Status badges */}
+                              {isSuccess && (
+                                <View style={styles.successBadge}>
+                                  <Text style={styles.successBadgeText}>✓</Text>
+                                </View>
+                              )}
+                              {isReview && (
+                                <View style={styles.reviewBadge}>
+                                  <Text style={styles.reviewBadgeText}>!</Text>
+                                </View>
+                              )}
+                              {isReview && (
+                                <View style={styles.tapToFixOverlay}>
+                                  <Text style={styles.tapToFixText}>Tap to Fix</Text>
+                                </View>
+                              )}
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              );
+            })}
           </>
         )}
       </ScrollView>
@@ -774,47 +1088,132 @@ export default function BinderScreen() {
         </View>
       )}
 
-      {/* ── Fix card modal ── */}
-      <Modal visible={reviewIdx !== null} animationType="slide" transparent onRequestClose={() => setReviewIdx(null)}>
+      {/* ── Fix card modal (bottom sheet) ── */}
+      <Modal visible={reviewIdx !== null} animationType="slide" transparent onRequestClose={() => { setReviewIdx(null); setReviewCandidates([]); }}>
         <View style={styles.modalBg}>
           <View style={styles.modalSheet}>
+            {/* Handle bar */}
+            <View style={styles.modalHandle} />
+
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Fix Card</Text>
-              <Pressable onPress={() => { setReviewIdx(null); setReviewCandidates([]); }}>
+              <Text style={styles.modalTitle}>Identify Card</Text>
+              <Pressable onPress={() => { setReviewIdx(null); setReviewCandidates([]); setReviewSearch(""); }}>
                 <Text style={styles.modalClose}>✕</Text>
               </Pressable>
             </View>
-            <View style={styles.reviewSearchRow}>
-              <TextInput
-                style={styles.reviewInput}
-                value={reviewSearch}
-                onChangeText={setReviewSearch}
-                placeholder="Type card name…"
-                placeholderTextColor="#606078"
-                onSubmitEditing={() => handleReviewSearch(reviewSearch)}
-                returnKeyType="search"
-              />
-              <Pressable style={styles.reviewSearchBtn} onPress={() => handleReviewSearch(reviewSearch)}>
+
+            {/* Full crop thumbnail — lets user read the card name despite glare */}
+            {reviewIdx !== null && results[reviewIdx] && (
+              <View style={styles.modalThumbRow}>
+                <View style={styles.modalThumbCard}>
+                  <img
+                    src={results[reviewIdx].thumbDataUrl}
+                    style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: 8, display: "block" } as any}
+                    alt="Card crop"
+                  />
+                </View>
+                <View style={styles.modalThumbMeta}>
+                  <Text style={styles.modalThumbLabel}>OCR read:</Text>
+                  <Text style={styles.modalThumbOcr} numberOfLines={2}>
+                    "{results[reviewIdx].extractedName || "—"}"
+                  </Text>
+                  {results[reviewIdx].ocrDataUrl && (
+                    <View style={styles.modalOcrStripWrap}>
+                      <img
+                        src={results[reviewIdx].ocrDataUrl}
+                        style={{ width: "100%", height: 36, objectFit: "contain", borderRadius: 4, display: "block" } as any}
+                        alt="OCR strip"
+                      />
+                    </View>
+                  )}
+                </View>
+              </View>
+            )}
+
+            {/* Search input + absolute autocomplete dropdown */}
+            <View style={styles.searchWrapper}>
+              <View style={styles.reviewSearchRow}>
+                <TextInput
+                  style={styles.reviewInput}
+                  value={reviewSearch}
+                  onChangeText={text => {
+                    setReviewSearch(text);
+                    if (!text.trim()) setReviewCandidates([]);
+                  }}
+                  placeholder="Type card name…"
+                  placeholderTextColor="#606078"
+                  autoFocus
+                  onSubmitEditing={() => handleReviewSearch(reviewSearch)}
+                  returnKeyType="search"
+                />
                 {reviewSearching
-                  ? <ActivityIndicator color="#0a0a0f" size="small" />
-                  : <Text style={styles.reviewSearchBtnText}>Search</Text>
+                  ? <ActivityIndicator color={ACCENT} style={{ paddingHorizontal: 14 }} />
+                  : reviewSearch.trim()
+                    ? <Pressable style={styles.reviewSearchBtn} onPress={() => handleReviewSearch(reviewSearch)}>
+                        <Text style={styles.reviewSearchBtnText}>Go</Text>
+                      </Pressable>
+                    : null
                 }
-              </Pressable>
+              </View>
+
+              {/* Floating autocomplete dropdown */}
+              {reviewCandidates.length > 0 && (
+                <View style={styles.autocompleteDropdown}>
+                  <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 260 as any }}>
+                    {reviewCandidates.map(card => {
+                      const thumb = card.image_uris?.small ?? card.card_faces?.[0]?.image_uris?.small;
+                      return (
+                        <Pressable key={card.id} style={styles.reviewCandidate} onPress={() => applyReviewCard(card)}>
+                          {thumb ? (
+                            <img
+                              src={thumb}
+                              style={{ width: 36, height: 50, objectFit: "cover", borderRadius: 4, flexShrink: 0 } as any}
+                              alt=""
+                            />
+                          ) : null}
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.reviewCandidateName}>{card.name}</Text>
+                            <Text style={styles.reviewCandidateMeta}>
+                              {card.set.toUpperCase()} #{card.collector_number} · {card.rarity}
+                            </Text>
+                          </View>
+                          <Text style={styles.reviewCandidateArrow}>→</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
             </View>
-            <ScrollView>
-              {reviewCandidates.map(card => (
-                <Pressable key={card.id} style={styles.reviewCandidate} onPress={() => applyReviewCard(card)}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.reviewCandidateName}>{card.name}</Text>
-                    <Text style={styles.reviewCandidateMeta}>{card.set.toUpperCase()} #{card.collector_number}</Text>
-                  </View>
-                  <Text style={styles.reviewCandidateArrow}>→</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
           </View>
         </View>
       </Modal>
+
+      {/* ── Floating commit button ── */}
+      {results.length > 0 && !processing && identifiedCards.length > 0 && (
+        <Pressable
+          style={[styles.floatingCommit, (!activeSession || committing) && styles.floatingCommitDisabled]}
+          onPress={handleCommit}
+          disabled={!activeSession || committing}
+        >
+          {committing ? (
+            <ActivityIndicator color="#0a0a0f" />
+          ) : (
+            <>
+              <Text style={styles.floatingCommitText}>
+                {activeSession
+                  ? `Commit ${identifiedCards.length} Card${identifiedCards.length !== 1 ? "s" : ""} to Vault`
+                  : "No active session"}
+              </Text>
+              {reviewCards.length > 0 && (
+                <Text style={styles.floatingCommitSub}>
+                  {reviewCards.length} unresolved will be skipped
+                </Text>
+              )}
+            </>
+          )}
+        </Pressable>
+      )}
 
       {/* ── Set picker modal ── */}
       <Modal visible={setPickerOpen} animationType="slide" onRequestClose={() => setSetPickerOpen(false)}>
@@ -862,9 +1261,9 @@ export default function BinderScreen() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0a0a0f" },
-  content:   { padding: 16, paddingBottom: 100 },
+  content:   { padding: 16, paddingBottom: 130 },
 
-  // Crop overlay
+  // ── Crop overlay ─────────────────────────────────────────────────────────────
   cropOverlay: {
     position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: "#0a0a0f", zIndex: 200, flexDirection: "column",
@@ -877,14 +1276,12 @@ const styles = StyleSheet.create({
   cropCancelBtn: { paddingHorizontal: 12, paddingVertical: 6, backgroundColor: "#1a1a26", borderRadius: 10 },
   cropCancelText:{ color: "#606078", fontWeight: "700", fontSize: 13 },
   cropCanvasWrap:{ flex: 1, alignItems: "center", justifyContent: "center", overflow: "hidden", padding: 8 },
-  cropFooter: {
-    padding: 16, borderTopWidth: 1, borderColor: "#222233", gap: 10,
-  },
+  cropFooter:    { padding: 16, borderTopWidth: 1, borderColor: "#222233", gap: 10 },
   cropHint:        { color: "#606078", fontSize: 12, textAlign: "center" },
   cropConfirmBtn:  { backgroundColor: ACCENT, borderRadius: 14, padding: 16, alignItems: "center" },
   cropConfirmText: { color: "#0a0a0f", fontWeight: "900", fontSize: 15 },
 
-  // Config
+  // ── Config ───────────────────────────────────────────────────────────────────
   configCard: { backgroundColor: "#12121a", borderRadius: 16, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: "#222233" },
   setBtn:     { marginBottom: 14 },
   setBtnLabel:{ color: "#606078", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1, marginBottom: 4 },
@@ -897,69 +1294,197 @@ const styles = StyleSheet.create({
   gridBtnText:      { color: "#a0a0b8", fontWeight: "700", fontSize: 13 },
   gridBtnTextActive:{ color: "#0a0a0f" },
 
-  // Upload
-  uploadBtn:        { alignItems: "center", padding: 48, borderRadius: 20, borderWidth: 2, borderColor: "#222233", borderStyle: "dashed", marginBottom: 24 },
-  uploadBtnDisabled:{ opacity: 0.4 },
-  uploadEmoji:      { fontSize: 48, marginBottom: 12 },
-  uploadTitle:      { color: "#f0f0f8", fontSize: 20, fontWeight: "800", marginBottom: 6 },
-  uploadSub:        { color: "#606078", fontSize: 14, textAlign: "center" },
+  // ── Actions ──────────────────────────────────────────────────────────────────
+  actionsRow:           { flexDirection: "row", gap: 16, marginBottom: 24 },
+  actionBtnCamera:      { flex: 1, alignItems: "center", padding: 32, borderRadius: 20, backgroundColor: ACCENT },
+  actionBtnUpload:      { flex: 1, alignItems: "center", padding: 32, borderRadius: 20, backgroundColor: "#1a1a26", borderWidth: 2, borderColor: "#333348", borderStyle: "dashed" },
+  actionBtnEmoji:       { fontSize: 36, marginBottom: 12 },
+  actionBtnTitle:       { color: "#0a0a0f", fontSize: 16, fontWeight: "800", textAlign: "center" },
+  actionBtnTitleUpload: { color: "#f0f0f8", fontSize: 16, fontWeight: "800", textAlign: "center" },
+  uploadBtn:   { alignItems: "center", padding: 48, borderRadius: 20, borderWidth: 2, borderColor: "#222233", borderStyle: "dashed", marginBottom: 24 },
+  uploadEmoji: { fontSize: 48, marginBottom: 12 },
+  uploadTitle: { color: "#f0f0f8", fontSize: 20, fontWeight: "800", marginBottom: 6 },
+  uploadSub:   { color: "#606078", fontSize: 14, textAlign: "center" },
 
-  // Sticky progress
-  stickyProgress: {
-    position: "absolute", bottom: 0, left: 0, right: 0,
-    backgroundColor: "rgba(10,10,15,0.97)",
-    borderTopWidth: 1, borderColor: "#222233",
-    padding: 14, gap: 8, zIndex: 100,
+  // ── Camera overlay ───────────────────────────────────────────────────────────
+  cameraOverlay:      { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "#000", zIndex: 300, justifyContent: "space-between" },
+  cameraTop:          { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 24, paddingTop: 40, backgroundColor: "rgba(0,0,0,0.5)" },
+  cameraCloseBtn:     { padding: 12, backgroundColor: "rgba(255,255,255,0.2)", borderRadius: 12 },
+  cameraCloseText:    { color: "#fff", fontWeight: "700" },
+  cameraBadge:        { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: "rgba(0,0,0,0.6)", borderRadius: 16 },
+  cameraBadgeText:    { color: ACCENT, fontWeight: "900", fontSize: 16 },
+  cameraDoneBtn:      { padding: 12, backgroundColor: ACCENT, borderRadius: 12, paddingHorizontal: 20 },
+  cameraDoneBtnText:  { color: "#000", fontWeight: "800", fontSize: 15 },
+  cameraBottom:       { padding: 40, alignItems: "center", backgroundColor: "rgba(0,0,0,0.5)" },
+  cameraCaptureBtn:   { width: 80, height: 80, borderRadius: 40, borderWidth: 4, borderColor: "#fff", alignItems: "center", justifyContent: "center" },
+  cameraCaptureInner: { width: 66, height: 66, borderRadius: 33, backgroundColor: "white" },
+
+  // ── Sticky progress bar ──────────────────────────────────────────────────────
+  stickyProgress:     { position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(10,10,15,0.97)", borderTopWidth: 1, borderColor: "#222233", padding: 14, gap: 8, zIndex: 100 },
+  stickyProgressRow:  { flexDirection: "row", alignItems: "center", gap: 10 },
+  stickyProgressText: { color: "#a0a0b8", fontSize: 14, fontWeight: "600", flex: 1 },
+  stickyBarBg:        { height: 4, backgroundColor: "#1a1a26", borderRadius: 2, overflow: "hidden" },
+  stickyBarFill:      { height: "100%", backgroundColor: ACCENT, borderRadius: 2 },
+
+  // ── Results top bar ──────────────────────────────────────────────────────────
+  summaryRow:      { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" },
+  summaryBadge:    { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, borderWidth: 1 },
+  summaryBadgeText:{ fontWeight: "700", fontSize: 12 },
+  rescanBtn:       { marginLeft: "auto" as any, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, backgroundColor: "#1a1a26", borderWidth: 1, borderColor: "#333348" },
+  rescanBtnText:   { color: "#a0a0b8", fontWeight: "700", fontSize: 12 },
+
+  // "View Photo" toggle
+  viewPhotoBtn:       { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, backgroundColor: "#1a1a26", borderWidth: 1, borderColor: "#333348" },
+  viewPhotoBtnActive: { backgroundColor: "rgba(200,155,60,0.18)", borderColor: ACCENT },
+  viewPhotoBtnText:   { color: "#a0a0b8", fontWeight: "700", fontSize: 12 },
+
+  // ── Original photo context view ──────────────────────────────────────────────
+  originalPhotoSection: { marginBottom: 20, gap: 10 },
+  originalPhotoWrapper: { borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: "#252d42" },
+  originalPhotoLabel:   { color: "#606078", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1, padding: 8, backgroundColor: "#12121a" },
+
+  // ── Physical binder page ─────────────────────────────────────────────────────
+  binderPage: {
+    backgroundColor: "#161c2e",
+    borderRadius: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "#252d42",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.55,
+    shadowRadius: 14,
+    elevation: 10,
+    // Constrain width so cards are not enormous on wide screens
+    maxWidth: 520,
+    width: "100%" as any,
+    alignSelf: "center",
   },
-  stickyProgressRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  stickyProgressText:{ color: "#a0a0b8", fontSize: 14, fontWeight: "600", flex: 1 },
-  stickyBarBg:       { height: 4, backgroundColor: "#1a1a26", borderRadius: 2, overflow: "hidden" },
-  stickyBarFill:     { height: "100%", backgroundColor: ACCENT, borderRadius: 2 },
+  binderRingsRow: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: "#0e1320",
+    borderBottomWidth: 1,
+    borderColor: "#252d42",
+  },
+  binderRingHole: {
+    width: 16, height: 16, borderRadius: 8,
+    backgroundColor: "#0a0a0f",
+    borderWidth: 2, borderColor: "#3a4460",
+  },
+  binderGrid: { padding: 10, gap: 6 },
+  binderRow:  { flexDirection: "row", gap: 6 },
 
-  // Results
-  summaryRow:        { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 20, flexWrap: "wrap" },
-  summaryBadge:      { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 20, borderWidth: 1 },
-  summaryBadgeText:  { fontWeight: "700", fontSize: 13 },
-  rescanBtn:         { marginLeft: "auto" as any, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, backgroundColor: "#1a1a26", borderWidth: 1, borderColor: "#333348" },
-  rescanBtnText:     { color: "#a0a0b8", fontWeight: "700", fontSize: 13 },
-  sectionLabel:      { color: "#606078", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 },
+  // ── Card pockets ─────────────────────────────────────────────────────────────
+  pocket: {
+    flex: 1,
+    aspectRatio: 63 / 88,
+    backgroundColor: "#0d1117",
+    borderRadius: 6,
+    overflow: "hidden",
+    position: "relative",
+    borderWidth: 1,
+    borderColor: "#252d42",
+  },
+  pocketSuccess: {
+    borderWidth: 2,
+    borderColor: "#22c55e",
+  },
+  pocketReview: {
+    borderWidth: 2,
+    borderColor: "#f97316",
+    shadowColor: "#f97316",
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.65,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  emptyPocket: { flex: 1, backgroundColor: "#0b0f1a" },
 
-  cardGrid:         { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 24 },
-  cardCell:         { width: "30%" as any },
-  cardCellInner:    { backgroundColor: "#12121a", borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: "#22c55e44" },
-  cardCellName:     { color: "#f0f0f8", fontSize: 11, fontWeight: "600", padding: 6 },
-  removeBtn:        { position: "absolute", top: 4, right: 4, backgroundColor: "rgba(239,68,68,0.85)", borderRadius: 10, width: 18, height: 18, alignItems: "center", justifyContent: "center" },
-  removeBtnText:    { color: "#fff", fontSize: 12, fontWeight: "900", lineHeight: 16 },
+  // Status badges (corner pins)
+  successBadge:     { position: "absolute", top: 4, right: 4, width: 18, height: 18, borderRadius: 9, backgroundColor: "#22c55e", alignItems: "center", justifyContent: "center" },
+  successBadgeText: { color: "#fff", fontSize: 10, fontWeight: "900", lineHeight: 14 },
+  reviewBadge:      { position: "absolute", top: 4, right: 4, width: 18, height: 18, borderRadius: 9, backgroundColor: "#f97316", alignItems: "center", justifyContent: "center" },
+  reviewBadgeText:  { color: "#fff", fontSize: 12, fontWeight: "900", lineHeight: 16 },
 
-  reviewItem:       { flexDirection: "row", alignItems: "center", backgroundColor: "#12121a", borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: "#f59e0b44", gap: 12 },
-  reviewItemMid:    { flex: 1 },
-  reviewItemOcr:    { color: "#a0a0b8", fontSize: 13 },
-  reviewItemActions:{ flexDirection: "row", gap: 8 },
-  fixBtn:           { backgroundColor: ACCENT, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 },
-  fixBtnText:       { color: "#0a0a0f", fontWeight: "800", fontSize: 13 },
-  skipBtn:          { backgroundColor: "#1a1a26", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1, borderColor: "#333348" },
-  skipBtnText:      { color: "#606078", fontWeight: "700", fontSize: 13 },
+  // "Tap to Fix" bottom banner on review pockets
+  tapToFixOverlay: { position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(249,115,22,0.88)", paddingVertical: 3, alignItems: "center" },
+  tapToFixText:    { color: "#fff", fontSize: 9, fontWeight: "800", letterSpacing: 0.3 },
 
-  commitBtn:         { backgroundColor: ACCENT, borderRadius: 16, padding: 18, alignItems: "center", marginTop: 8 },
-  commitBtnDisabled: { opacity: 0.4 },
-  commitBtnText:     { color: "#0a0a0f", fontWeight: "900", fontSize: 16 },
+  // ── Floating commit button ───────────────────────────────────────────────────
+  floatingCommit: {
+    position: "absolute",
+    bottom: 20,
+    left: 16,
+    right: 16,
+    backgroundColor: ACCENT,
+    borderRadius: 18,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    alignItems: "center",
+    zIndex: 90,
+    shadowColor: ACCENT,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.45,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  floatingCommitDisabled: { opacity: 0.5 },
+  floatingCommitText:     { color: "#0a0a0f", fontWeight: "900", fontSize: 16 },
+  floatingCommitSub:      { color: "rgba(10,10,15,0.6)", fontSize: 12, fontWeight: "600", marginTop: 2 },
 
-  // Fix modal
-  modalBg:     { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "flex-end" },
-  modalSheet:  { backgroundColor: "#0a0a0f", borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: "80%", borderTopWidth: 1, borderColor: "#222233", padding: 20 },
+  // ── Fix card modal (bottom sheet) ────────────────────────────────────────────
+  modalBg:    { flex: 1, backgroundColor: "rgba(0,0,0,0.72)", justifyContent: "flex-end" },
+  modalSheet: {
+    backgroundColor: "#12121a",
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    width: "100%", maxHeight: "85%",
+    borderWidth: 1, borderColor: "#222233",
+    padding: 20, paddingTop: 12,
+  },
+  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: "#333348", alignSelf: "center", marginBottom: 16 },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
   modalTitle:  { color: "#f0f0f8", fontSize: 18, fontWeight: "800" },
-  modalClose:  { color: "#606078", fontSize: 22 },
-  reviewSearchRow:      { flexDirection: "row", gap: 8, marginBottom: 16 },
-  reviewInput:          { flex: 1, backgroundColor: "#12121a", borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, color: "#f0f0f8", fontSize: 15, borderWidth: 1, borderColor: "#222233" },
-  reviewSearchBtn:      { backgroundColor: ACCENT, borderRadius: 12, paddingHorizontal: 16, justifyContent: "center" },
-  reviewSearchBtnText:  { color: "#0a0a0f", fontWeight: "800", fontSize: 14 },
-  reviewCandidate:      { flexDirection: "row", alignItems: "center", padding: 14, borderBottomWidth: 1, borderColor: "#111120" },
-  reviewCandidateName:  { color: "#f0f0f8", fontSize: 15, fontWeight: "600" },
-  reviewCandidateMeta:  { color: "#606078", fontSize: 12, marginTop: 2 },
-  reviewCandidateArrow: { color: ACCENT, fontSize: 18, paddingLeft: 12 },
+  modalClose:  { color: "#606078", fontSize: 22, padding: 4 },
 
-  // Set picker
+  // Thumbnail + OCR strip row inside modal
+  modalThumbRow:    { flexDirection: "row", gap: 12, marginBottom: 16, backgroundColor: "#0a0a0f", borderRadius: 12, padding: 10, borderWidth: 1, borderColor: "#222233" },
+  modalThumbCard:   { width: 72, aspectRatio: 63 / 88, borderRadius: 6, overflow: "hidden", backgroundColor: "#1a1a26", flexShrink: 0 },
+  modalThumbMeta:   { flex: 1, justifyContent: "center", gap: 6 },
+  modalThumbLabel:  { color: "#606078", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1 },
+  modalThumbOcr:    { color: "#f0f0f8", fontSize: 13, fontWeight: "600", fontStyle: "italic" },
+  modalOcrStripWrap:{ backgroundColor: "#1a1a26", borderRadius: 6, padding: 4 },
+
+  searchWrapper:       { position: "relative", zIndex: 10, marginBottom: 16 },
+  autocompleteDropdown: {
+    position: "absolute",
+    top: 52 as any,   // sits just below the ~48px input row
+    left: 0, right: 0,
+    backgroundColor: "#0e0e18",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#333348",
+    zIndex: 999,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.55,
+    shadowRadius: 12,
+    elevation: 16,
+  },
+  reviewSearchRow:     { flexDirection: "row", gap: 8, alignItems: "center" },
+  reviewInput:         { flex: 1, backgroundColor: "#0a0a0f", borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, color: "#f0f0f8", fontSize: 15, borderWidth: 1, borderColor: "#333348" },
+  reviewSearchBtn:     { backgroundColor: ACCENT, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 11, justifyContent: "center" },
+  reviewSearchBtnText: { color: "#0a0a0f", fontWeight: "800", fontSize: 14 },
+  reviewCandidate:     { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderBottomWidth: 1, borderColor: "#1a1a26" },
+  reviewCandidateName: { color: "#f0f0f8", fontSize: 15, fontWeight: "600" },
+  reviewCandidateMeta: { color: "#606078", fontSize: 12, marginTop: 2 },
+  reviewCandidateArrow:{ color: ACCENT, fontSize: 18, paddingLeft: 8 },
+
+  // ── Set picker ───────────────────────────────────────────────────────────────
   pickerContainer: { flex: 1, backgroundColor: "#0a0a0f" },
   pickerHeader:    { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1, borderColor: "#222233" },
   pickerTitle:     { color: "#f0f0f8", fontSize: 20, fontWeight: "800" },

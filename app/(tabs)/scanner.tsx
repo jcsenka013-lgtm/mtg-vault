@@ -297,6 +297,60 @@ const queueRowStyles = StyleSheet.create({
   reviewBadgeText:  { color: "#a0601a", fontSize: 11, fontWeight: "700" },
 });
 
+// ── Audio feedback (Web Audio API — zero extra packages) ─────────────────────
+function playTone(type: "success" | "review" | "commit") {
+  if (typeof window === "undefined") return;
+  try {
+    const Ctx = (window as any).AudioContext ?? (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx: AudioContext = new Ctx();
+    const t = ctx.currentTime;
+
+    if (type === "success") {
+      // Crisp high tick: short 1047 Hz sine
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(1047, t);
+      gain.gain.setValueAtTime(0.09, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      osc.start(t); osc.stop(t + 0.08);
+    } else if (type === "review") {
+      // Muted low buzz: short sawtooth at 220 Hz
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(220, t);
+      gain.gain.setValueAtTime(0.06, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      osc.start(t); osc.stop(t + 0.22);
+    } else {
+      // Commit celebration: ascending four-note chord (C5–E5–G5–C6)
+      [523, 659, 784, 1047].forEach((freq, i) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = "sine";
+        const start = t + i * 0.09;
+        o.frequency.setValueAtTime(freq, start);
+        g.gain.setValueAtTime(0.1, start);
+        g.gain.exponentialRampToValueAtTime(0.001, start + 0.18);
+        o.start(start); o.stop(start + 0.18);
+      });
+    }
+    setTimeout(() => { try { ctx.close(); } catch {} }, 1000);
+  } catch { /* audio blocked / unsupported — silent fail */ }
+}
+
+/** navigator.vibrate fallback for web (no-op on unsupported browsers) */
+function vibrateWeb(pattern: number | number[]) {
+  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+    navigator.vibrate(pattern);
+  }
+}
+
 export default function ScannerScreen() {
   const isFocused = useIsFocused();
   const [permission, requestPermission] = useCameraPermissions();
@@ -391,7 +445,8 @@ export default function ScannerScreen() {
   // Auto-capture countdown progress (0 → 1 over 1.5 s)
   const countdownAnim = useRef(new Animated.Value(0)).current;
 
-  const cooldownRef = useRef(false);
+  const cooldownRef  = useRef(false);
+  const hydratedRef  = useRef(false);  // guard: run hydration exactly once
   const cameraRef = useRef<CameraView>(null);
   const videoRef = useRef<any>(null);
   const guideRef = useRef<View>(null);
@@ -421,6 +476,42 @@ export default function ScannerScreen() {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
   }, [isPokemonUser]);
+
+  // ── Auto-save rapidQueue to localStorage after every change ─────────────────
+  useEffect(() => {
+    if (rapidQueue.length === 0) return; // nothing to persist
+    try {
+      localStorage.setItem("mtg_draft_queue", JSON.stringify({
+        queue: rapidQueue,
+        savedAt: Date.now(),
+        sessionId: activeSession?.id ?? null,
+      }));
+    } catch { /* storage full or blocked — non-fatal */ }
+  }, [rapidQueue, activeSession?.id]);
+
+  // ── Hydrate from localStorage on first mount ─────────────────────────────────
+  useEffect(() => {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+    try {
+      const raw = localStorage.getItem("mtg_draft_queue");
+      if (!raw) return;
+      const { queue, savedAt } = JSON.parse(raw) as { queue: QueuedCard[]; savedAt: number; sessionId: string | null };
+      if (!Array.isArray(queue) || queue.length === 0) return;
+      if (Date.now() - savedAt > 24 * 60 * 60 * 1000) {
+        localStorage.removeItem("mtg_draft_queue"); // stale — discard silently
+        return;
+      }
+      Alert.alert(
+        "Unsaved Scan Session",
+        `You have ${queue.length} unsaved card${queue.length !== 1 ? "s" : ""} from a previous scan. Resume?`,
+        [
+          { text: "Clear", style: "destructive", onPress: () => localStorage.removeItem("mtg_draft_queue") },
+          { text: "Resume", onPress: () => setRapidQueue(queue) },
+        ],
+      );
+    } catch { /* nothing to restore */ }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (Platform.OS === "web") {
@@ -595,16 +686,18 @@ export default function ScannerScreen() {
 
         if (scanMode === "rapid") {
           if (results.length === 0) {
-            // No match → push to non-blocking review queue instead of opening a modal
-            setNeedsReview(prev => [
-              ...prev,
-              { localId: `review-${Date.now()}`, ocrText: sanitizedName, candidates: [] },
-            ]);
-            showToast("No match found — flagged for review");
+            // No match → silently ignore garbage frames so we don't spam the review queue.
+            // The camera will keep rolling and likely grab a clearer frame next.
             return;
           }
 
           const top = results[0];
+          
+          // Bail entirely if we already successfully scanned this exact card
+          if (rapidQueue.some(q => q.scryfallId === top.id)) {
+            return;
+          }
+
           const similarity = stringSimilarity(sanitizedName, top.name);
 
           if (similarity >= 0.7) {
@@ -626,14 +719,30 @@ export default function ScannerScreen() {
               priceUsdFoil: norm.priceUsdFoil,
             };
             setRapidQueue(prev => [queued, ...prev]);
-            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            
+            // Clean up any pending review items for this card now that we got it
+            setNeedsReview(prev => prev.filter(r => !r.candidates.some(c => c.id === top.id)));
+            
+            // Light haptic pop + crisp tick on success
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            vibrateWeb(30);
+            playTone("success");
             triggerSuccessFlash();
           } else {
-            // Low confidence → push to review queue, camera keeps rolling
-            setNeedsReview(prev => [
-              ...prev,
-              { localId: `review-${Date.now()}`, ocrText: sanitizedName, candidates: results },
-            ]);
+            // Low confidence → deduplicating push to review queue
+            setNeedsReview(prev => {
+              if (prev.some(r => r.candidates[0]?.id === top.id)) {
+                return prev; // We already have a review item for this card's top guess
+              }
+              return [
+                ...prev,
+                { localId: `review-${Date.now()}`, ocrText: sanitizedName, candidates: results },
+              ];
+            });
+            // Heavy double-buzz + muted error tone to signal failure without looking
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            vibrateWeb([40, 60, 40]);
+            playTone("review");
             showToast("Low confidence — flagged for review");
           }
         } else {
@@ -644,7 +753,9 @@ export default function ScannerScreen() {
           }
           // Only stop auto-scan on native devices; keep it running on web side-panel
           if (autoScan && !isWeb) setAutoScan(false);
-          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          vibrateWeb(30);
+          playTone("success");
           setResultCandidates(results);
           setResultModalVisible(true);
         }
@@ -655,7 +766,7 @@ export default function ScannerScreen() {
         setTimeout(() => { cooldownRef.current = false; }, 3000);
       }
     },
-    [activeSession, lastScanned, autoScan, selectedSet, scanMode, showToast, triggerSuccessFlash]
+    [activeSession, lastScanned, autoScan, selectedSet, scanMode, showToast, triggerSuccessFlash, rapidQueue, needsReview]
   );
 
   const handleResultSelect = useCallback(async (tappedCard: ScryfallCard) => {
@@ -744,7 +855,11 @@ export default function ScannerScreen() {
         imageUri: c.imageUri,
         scryfallUri: c.scryfallUri,
       })));
+      // Commit celebration: success notification + ascending chord + triple buzz
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      vibrateWeb([50, 30, 100]);
+      playTone("commit");
+      localStorage.removeItem("mtg_draft_queue"); // wipe the auto-save cache
       setRapidQueue([]);
       showToast(`✓ ${count} card${count !== 1 ? "s" : ""} saved to vault`);
     } catch (e) {
