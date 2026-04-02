@@ -146,6 +146,7 @@ export default function InventoryScreen() {
           style={[styles.deleteBtn, deletingIds.has(item.id) && styles.deleteBtnDisabled]}
           onPress={() => handleDelete(item.id, item.name)}
           disabled={deletingIds.has(item.id)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
         >
           {deletingIds.has(item.id)
             ? <ActivityIndicator size="small" color="#ef4444" />
@@ -280,7 +281,7 @@ const styles = StyleSheet.create({
   statValue: { color: "#22c55e", fontWeight: "700", fontSize: 13 },
   cardRowWrapper: { flexDirection: "row", alignItems: "center" },
   cardRow: { flex: 1, flexDirection: "row", alignItems: "center", padding: 12, paddingLeft: 16 },
-  deleteBtn: { padding: 16, paddingRight: 20 },
+  deleteBtn: { padding: 16, paddingRight: 20, zIndex: 10 },
   deleteBtnDisabled: { opacity: 0.5 },
   deleteEmoji: { fontSize: 18 },
   thumb: { width: 44, height: 60, borderRadius: 4, marginRight: 12 },
