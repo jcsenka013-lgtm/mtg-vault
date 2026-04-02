@@ -15,7 +15,17 @@ import {
 import { router, useFocusEffect } from "expo-router";
 import { useAppStore } from "@store/appStore";
 import { getCardsForSession, deleteCard } from "@db/queries";
+import { supabase } from "@/lib/supabase";
 import type { DbCard } from "@/lib/supabase";
+import { type ManaTheme } from "@/theme";
+
+const MANA_ORBS: { icon: string; theme: ManaTheme; bg: string }[] = [
+  { icon: "☀️", theme: "W", bg: "#d4c060" },
+  { icon: "💧", theme: "U", bg: "#3a7ac0" },
+  { icon: "💀", theme: "B", bg: "#7a50a0" },
+  { icon: "🔥", theme: "R", bg: "#c04020" },
+  { icon: "🌳", theme: "G", bg: "#207a40" },
+];
 
 const RARITY_COLORS: Record<string, string> = {
   mythic: "#e87a3c",
@@ -41,6 +51,7 @@ export default function InventoryScreen() {
     sortField, setSortField,
     sortOrder, setSortOrder,
     searchQuery, setSearchQuery,
+    activeTheme, setTheme,
   } = useAppStore();
   const [cards, setCards] = useState<DbCard[]>([]);
   const [loading, setLoading] = useState(false);
@@ -160,6 +171,41 @@ export default function InventoryScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Combined Hero Banner */}
+      <ImageBackground
+        source={require("../../assets/bg-mana-symbols.jpg")}
+        style={styles.heroBanner}
+        resizeMode="cover"
+      >
+        <View style={styles.heroBannerOverlay}>
+          {/* Mana orbs — left, single row */}
+          <View style={styles.manaOrbsRow}>
+            {MANA_ORBS.map((m) => (
+              <Pressable
+                key={m.theme}
+                style={[
+                  styles.manaOrb,
+                  { backgroundColor: m.bg, opacity: activeTheme === m.theme ? 1 : 0.55 },
+                  activeTheme === m.theme && styles.manaOrbActive,
+                ]}
+                onPress={() => {
+                  setTheme(m.theme);
+                  supabase.auth.updateUser({ data: { mana_type: m.theme } });
+                }}
+              >
+                <Text style={styles.manaOrbIcon}>{m.icon}</Text>
+              </Pressable>
+            ))}
+          </View>
+          {/* Title — center */}
+          <View style={styles.heroTitleBox}>
+            <Text style={styles.heroTitle}>📚 Library</Text>
+          </View>
+          {/* Spacer to balance left side */}
+          <View style={{ width: 190 }} />
+        </View>
+      </ImageBackground>
+
       {/* Search + Manual Entry */}
       <View style={styles.searchRow}>
         <View style={[styles.searchBar, { flex: 1 }]}>
@@ -276,6 +322,14 @@ export default function InventoryScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0a0a0f" },
+  heroBanner: { height: 120, width: "100%", overflow: "hidden" },
+  heroBannerOverlay: { flex: 1, backgroundColor: "rgba(10,10,15,0.50)", flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16 },
+  manaOrbsRow: { flexDirection: "row", gap: 6, alignItems: "center" },
+  manaOrb: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+  manaOrbActive: { transform: [{ scale: 1.2 }] },
+  manaOrbIcon: { fontSize: 18 },
+  heroTitleBox: { flex: 1, alignItems: "center" },
+  heroTitle: { color: "#f0f0f8", fontSize: 22, fontWeight: "900", letterSpacing: 1, textShadowColor: "rgba(0,0,0,0.9)", textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 6 },
   searchBar: { flexDirection: "row", alignItems: "center", backgroundColor: "#12121a", borderRadius: 12, paddingHorizontal: 14, borderWidth: 1, borderColor: "#222233", marginBottom: 12 },
   searchIcon: { fontSize: 16, marginRight: 8, opacity: 0.6 },
   searchInput: { flex: 1, color: "#f0f0f8", fontSize: 15, paddingVertical: 12 },
