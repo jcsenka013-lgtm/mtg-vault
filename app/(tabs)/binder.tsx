@@ -310,7 +310,7 @@ export default function BinderScreen() {
   }, [webPermissionGranted, cameraOpen]);
 
   // ── Debounced autocomplete: fire search 500 ms after the user stops typing ───
-  const debouncedReviewSearch = useDebounce(reviewSearch, 500);
+  const debouncedReviewSearch = useDebounce(reviewSearch, 300);
   useEffect(() => {
     if (!debouncedReviewSearch.trim() || reviewIdx === null) return;
     handleReviewSearch(debouncedReviewSearch);
@@ -1092,8 +1092,6 @@ export default function BinderScreen() {
       <Modal visible={reviewIdx !== null} animationType="slide" transparent onRequestClose={() => { setReviewIdx(null); setReviewCandidates([]); }}>
         <View style={styles.modalBg}>
           <View style={styles.modalSheet}>
-            {/* Handle bar */}
-            <View style={styles.modalHandle} />
 
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Identify Card</Text>
@@ -1436,16 +1434,16 @@ const styles = StyleSheet.create({
   floatingCommitText:     { color: "#0a0a0f", fontWeight: "900", fontSize: 16 },
   floatingCommitSub:      { color: "rgba(10,10,15,0.6)", fontSize: 12, fontWeight: "600", marginTop: 2 },
 
-  // ── Fix card modal (bottom sheet) ────────────────────────────────────────────
-  modalBg:    { flex: 1, backgroundColor: "rgba(0,0,0,0.72)", justifyContent: "flex-end" },
+  // ── Fix card modal (centered dialog) ─────────────────────────────────────────
+  modalBg:    { flex: 1, backgroundColor: "rgba(0,0,0,0.75)", justifyContent: "center", alignItems: "center", padding: 20 },
   modalSheet: {
     backgroundColor: "#12121a",
-    borderTopLeftRadius: 24, borderTopRightRadius: 24,
-    width: "100%", maxHeight: "85%",
+    borderRadius: 20,
+    width: "100%" as any, maxWidth: 480, maxHeight: "82%" as any,
     borderWidth: 1, borderColor: "#222233",
-    padding: 20, paddingTop: 12,
+    padding: 20,
   },
-  modalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: "#333348", alignSelf: "center", marginBottom: 16 },
+  modalHandle: { display: "none" as any },
   modalHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
   modalTitle:  { color: "#f0f0f8", fontSize: 18, fontWeight: "800" },
   modalClose:  { color: "#606078", fontSize: 22, padding: 4 },

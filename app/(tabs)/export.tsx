@@ -8,13 +8,24 @@ import {
   ActivityIndicator,
   Alert,
   Switch,
+  ImageBackground,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { useAppStore } from "@store/appStore";
 import { getCardsForSession } from "@db/queries";
 import { exportCardsAsCsv, formatAsTcgPlayerList } from "@api/export";
 import * as Clipboard from "expo-clipboard";
+import { supabase } from "@/lib/supabase";
 import type { DbCard } from "@/lib/supabase";
+import { type ManaTheme } from "@/theme";
+
+const MANA_ORBS: { icon: string; theme: ManaTheme; bg: string }[] = [
+  { icon: "☀️", theme: "W", bg: "#d4c060" },
+  { icon: "💧", theme: "U", bg: "#3a7ac0" },
+  { icon: "💀", theme: "B", bg: "#7a50a0" },
+  { icon: "🔥", theme: "R", bg: "#c04020" },
+  { icon: "🌳", theme: "G", bg: "#207a40" },
+];
 
 const RARITY_COLORS: Record<string, string> = {
   mythic: "#e87a3c",
@@ -24,7 +35,7 @@ const RARITY_COLORS: Record<string, string> = {
 };
 
 export default function ExportScreen() {
-  const { activeSession } = useAppStore();
+  const { activeSession, activeTheme, setTheme } = useAppStore();
   const [cards, setCards] = useState<DbCard[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -119,6 +130,41 @@ export default function ExportScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Combined Hero Banner */}
+      <ImageBackground
+        source={require("../../assets/bg-mana-symbols.jpg")}
+        style={styles.heroBanner}
+        resizeMode="cover"
+      >
+        <View style={styles.heroBannerOverlay}>
+          {/* Mana orbs — left, single row */}
+          <View style={styles.manaOrbsRow}>
+            {MANA_ORBS.map((m) => (
+              <Pressable
+                key={m.theme}
+                style={[
+                  styles.manaOrb,
+                  { backgroundColor: m.bg, opacity: activeTheme === m.theme ? 1 : 0.55 },
+                  activeTheme === m.theme && styles.manaOrbActive,
+                ]}
+                onPress={() => {
+                  setTheme(m.theme);
+                  supabase.auth.updateUser({ data: { mana_type: m.theme } });
+                }}
+              >
+                <Text style={styles.manaOrbIcon}>{m.icon}</Text>
+              </Pressable>
+            ))}
+          </View>
+          {/* Title — center */}
+          <View style={styles.heroTitleBox}>
+            <Text style={styles.heroTitle}>⚡ Share</Text>
+          </View>
+          {/* Spacer to balance */}
+          <View style={{ width: 80 }} />
+        </View>
+      </ImageBackground>
+
       <View style={styles.header}>
         <View style={styles.toggleRow}>
           <Text style={styles.toggleLabel}>Foil Only</Text>
@@ -175,6 +221,14 @@ export default function ExportScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0a0a0f" },
+  heroBanner: { height: 120, width: "100%", overflow: "hidden" },
+  heroBannerOverlay: { flex: 1, backgroundColor: "rgba(10,10,15,0.50)", flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16 },
+  manaOrbsRow: { flexDirection: "row", gap: 6, alignItems: "center" },
+  manaOrb: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+  manaOrbActive: { transform: [{ scale: 1.2 }] },
+  manaOrbIcon: { fontSize: 18 },
+  heroTitleBox: { flex: 1, alignItems: "center" },
+  heroTitle: { color: "#f0f0f8", fontSize: 22, fontWeight: "900", letterSpacing: 1, textShadowColor: "rgba(0,0,0,0.9)", textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 6 },
   header: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderColor: "#222233" },
   toggleRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   toggleLabel: { color: "#a0a0b8", fontSize: 14, fontWeight: "600" },
