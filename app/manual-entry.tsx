@@ -332,14 +332,12 @@ export default function ManualEntryScreen() {
     setSaving(true);
     try {
       let finalSessionId = targetSessionId;
-      
-      // If no session is active or passed, use/create the "Individual Entries" session
       if (!finalSessionId) {
         const indvSession = await getOrCreateIndividualSession();
         finalSessionId = indvSession.id;
       }
       
-      await addCard({
+      const savePromise = addCard({
         sessionId: finalSessionId,
         scryfallId: scryfallCard?.id ?? uuidv4(),
         name: name.trim(),
@@ -358,10 +356,15 @@ export default function ManualEntryScreen() {
           : null,
         scryfallUri: scryfallCard?.scryfall_uri ?? null,
       });
+
+      // Simple 10s timeout for DB ops
+      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("Save timeout")), 10000));
+      await Promise.race([savePromise, timeout]);
+
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.back();
     } catch (e) {
-      Alert.alert("Error", "Failed to save card. Please try again.");
+      Alert.alert("Error", "Failed to save card. " + (e instanceof Error ? e.message : "Please try again."));
       console.error(e);
     } finally {
       setSaving(false);

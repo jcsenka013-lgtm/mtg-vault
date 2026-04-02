@@ -29,6 +29,7 @@ export default function ConfirmScreen() {
   const [isFullArt, setIsFullArt] = useState(false);
   const [condition, setCondition] = useState<"NM" | "LP" | "MP" | "HP" | "DMG">("NM");
   const [saving, setSaving] = useState(false);
+  const [quantity, setQuantity] = useState(1);
 
   // Manual search state
   const [searchQuery, setSearchQuery] = useState("");
@@ -136,7 +137,7 @@ export default function ConfirmScreen() {
         colors: normalized.colors,
         isFoil,
         condition,
-        quantity: 1,
+        quantity,
         priceUsd: normalized.priceUsd,
         priceUsdFoil: normalized.priceUsdFoil,
         setName: normalized.setName + (isFullArt ? " (Full Art)" : ""),
@@ -144,7 +145,12 @@ export default function ConfirmScreen() {
         scryfallUri: normalized.scryfallUri,
       });
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.back();
+      // Use replace to avoid stacking confirmation screens; takes user back to scanner
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace("/(tabs)/scanner");
+      }
     } catch (e) {
       Alert.alert("Error", "Failed to save card. Please try again.");
       console.error(e);
@@ -251,6 +257,26 @@ export default function ConfirmScreen() {
               />
             </View>
 
+            <View style={styles.settingRow}>
+              <Text style={styles.settingLabel}>🔢 Quantity</Text>
+              <View style={styles.quantityRow}>
+                <Pressable
+                  style={[styles.qtyBtn, quantity <= 1 && styles.qtyBtnDisabled]}
+                  onPress={() => setQuantity(q => Math.max(1, q - 1))}
+                  disabled={quantity <= 1}
+                >
+                  <Text style={styles.qtyBtnText}>−</Text>
+                </Pressable>
+                <Text style={styles.qtyValue}>{quantity}</Text>
+                <Pressable
+                  style={styles.qtyBtn}
+                  onPress={() => setQuantity(q => q + 1)}
+                >
+                  <Text style={styles.qtyBtnText}>+</Text>
+                </Pressable>
+              </View>
+            </View>
+
             <View style={styles.conditionSection}>
               <Text style={styles.sectionLabel}>Condition</Text>
               <View style={styles.conditionRow}>
@@ -300,7 +326,9 @@ export default function ConfirmScreen() {
         >
           {saving
             ? <ActivityIndicator color="#0a0a0f" size="small" />
-            : <Text style={styles.confirmBtnText}>✓ Add to Collection</Text>
+            : <Text style={styles.confirmBtnText}>
+                {quantity > 1 ? `✓ Add ${quantity}x to Collection` : "✓ Add to Collection"}
+              </Text>
           }
         </Pressable>
       </View>
@@ -343,6 +371,11 @@ const styles = StyleSheet.create({
   condBtnActive: { backgroundColor: "#1e1a0f", borderColor: "#c89b3c" },
   condBtnText: { color: "#a0a0b8", fontWeight: "700", fontSize: 13 },
   condBtnTextActive: { color: "#c89b3c" },
+  quantityRow: { flexDirection: "row", alignItems: "center", gap: 16 },
+  qtyBtn: { backgroundColor: "#222233", borderRadius: 10, width: 36, height: 36, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#333348" },
+  qtyBtnDisabled: { opacity: 0.35 },
+  qtyBtnText: { color: "#f0f0f8", fontSize: 20, fontWeight: "700", lineHeight: 22 },
+  qtyValue: { color: "#f0f0f8", fontSize: 22, fontWeight: "900", minWidth: 32, textAlign: "center" },
   altSection: { marginBottom: 16 },
   altCard: { backgroundColor: "#12121a", borderRadius: 10, padding: 12, marginRight: 8, width: 120, borderWidth: 1, borderColor: "#222233" },
   altCardActive: { borderColor: "#4a9eff", backgroundColor: "#0a1020" },

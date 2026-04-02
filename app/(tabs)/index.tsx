@@ -1,12 +1,12 @@
 import { useState, useCallback } from "react";
 import {
   View, Text, ScrollView, Pressable,
-  TextInput, ActivityIndicator, StyleSheet,
+  TextInput, ActivityIndicator, StyleSheet, Alert,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useAppStore } from "@store/appStore";
 import { useAuthStore } from "@store/authStore";
-import { getAllSessions, calculateSessionROI, updateSessionCost } from "@db/queries";
+import { getAllSessions, calculateSessionROI, updateSessionCost, deleteSession } from "@db/queries";
 import type { DbSession } from "@/lib/supabase";
 import { supabase } from "@/lib/supabase";
 import type { SessionROI } from "@mtgtypes/index";
@@ -57,6 +57,26 @@ export default function DashboardScreen() {
   }, [activeSession]);
 
   useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
+
+  const handleDeleteSession = async (id: string, name: string) => {
+    const confirmed =
+      typeof window !== "undefined"
+        ? window.confirm(`Delete "${name}"? This will remove all cards in this opening.`)
+        : await new Promise<boolean>(resolve =>
+            Alert.alert(
+              "Delete Opening",
+              `Delete "${name}"? This will remove all cards in this opening.`,
+              [
+                { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+                { text: "Delete", style: "destructive", onPress: () => resolve(true) },
+              ]
+            )
+          );
+    if (!confirmed) return;
+    await deleteSession(id);
+    if (activeSession?.id === id) setActiveSession(null);
+    loadData();
+  };
 
   const handleCostUpdate = async () => {
     // ... handle cost update logic
@@ -129,15 +149,23 @@ export default function DashboardScreen() {
       ) : (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.sessionScroll}>
           {sessions.map((s) => (
-            <Pressable
-              key={s.id}
-              style={[styles.sessionChip, activeSession?.id === s.id && styles.sessionChipActive]}
-              onPress={() => setActiveSession({ id: s.id, name: s.name, costPaid: s.cost_paid })}
-            >
-              <Text style={[styles.sessionChipText, activeSession?.id === s.id && styles.sessionChipTextActive]}>
-                {s.name}
-              </Text>
-            </Pressable>
+            <View key={s.id} style={[styles.sessionChip, activeSession?.id === s.id && styles.sessionChipActive]}>
+              <Pressable
+                style={{ flex: 1 }}
+                onPress={() => setActiveSession({ id: s.id, name: s.name, costPaid: s.cost_paid })}
+              >
+                <Text style={[styles.sessionChipText, activeSession?.id === s.id && styles.sessionChipTextActive]}>
+                  {s.name}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={styles.sessionChipDelete}
+                onPress={() => handleDeleteSession(s.id, s.name)}
+                hitSlop={6}
+              >
+                <Text style={styles.sessionChipDeleteText}>×</Text>
+              </Pressable>
+            </View>
           ))}
         </ScrollView>
       )}
@@ -302,10 +330,12 @@ const styles = StyleSheet.create({
 
   // Session Chips
   sessionScroll: { marginBottom: 20 },
-  sessionChip: { backgroundColor: "#1a1a26", borderRadius: 20, paddingHorizontal: 16, paddingVertical: 8, marginRight: 8, borderWidth: 1, borderColor: "#222233" },
+  sessionChip: { flexDirection: "row", alignItems: "center", backgroundColor: "#1a1a26", borderRadius: 20, paddingLeft: 16, paddingRight: 6, paddingVertical: 8, marginRight: 8, borderWidth: 1, borderColor: "#222233", gap: 6 },
   sessionChipActive: { borderColor: "#c89b3c", backgroundColor: "#1e1a0f" },
   sessionChipText: { color: "#a0a0b8", fontWeight: "600" },
   sessionChipTextActive: { color: "#c89b3c" },
+  sessionChipDelete: { backgroundColor: "rgba(239,68,68,0.15)", borderRadius: 12, width: 22, height: 22, alignItems: "center", justifyContent: "center" },
+  sessionChipDeleteText: { color: "#ef4444", fontSize: 16, fontWeight: "700", lineHeight: 20 },
 
   // Collection Summary Card
   summaryCard: {

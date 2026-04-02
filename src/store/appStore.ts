@@ -22,6 +22,10 @@ interface AppStore {
   pendingCard: ScannedCard | null;
   setPendingCard: (card: ScannedCard | null) => void;
 
+  // Pokemon mode
+  isPokemonUser: boolean;
+  setIsPokemonUser: (v: boolean) => void;
+
   // Scanner UI state
   isScannerActive: boolean;
   setScannerActive: (active: boolean) => void;
@@ -54,6 +58,9 @@ export const useAppStore = create<AppStore>((set) => ({
 
   pendingCard: null,
   setPendingCard: (card) => set({ pendingCard: card }),
+
+  isPokemonUser: false,
+  setIsPokemonUser: (v) => set({ isPokemonUser: v }),
 
   isScannerActive: false,
   setScannerActive: (active) => set({ isScannerActive: active }),

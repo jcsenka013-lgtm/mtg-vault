@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Dimensions,
   Modal,
+  FlatList,
   ScrollView,
   TextInput,
   Image,
@@ -25,8 +26,10 @@ const CARD_RATIO = 63 / 88;
 const CARD_WIDTH = Math.min(SCREEN_WIDTH * 0.85, 450);
 const CARD_HEIGHT = CARD_WIDTH / CARD_RATIO;
 const TITLE_HEIGHT = CARD_HEIGHT * 0.15;
+// Platform constant — safe at module level; never changes at runtime
+const isWeb = Platform.OS === "web";
 
-import { searchCardByNameInSet, fetchMtgSets, normalizeScryfallCard, getCardBySetAndNumber } from "@api/scryfall";
+import { searchCardByNameInSet, fetchMtgSets, normalizeScryfallCard, getCardBySetAndNumber, fetchCardsBySet, autocompleteCardName } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
 import type { ScryfallSet } from "@api/scryfall";
 import { bulkAddCards } from "@db/queries";
@@ -35,7 +38,104 @@ import * as ImageManipulator from "expo-image-manipulator";
 
 // Regex patterns for OCR text extraction (used for future set code detection)
 const COLLECTOR_PATTERN = /(\d{1,4})\s*\/\s*(\d{1,4})/;
-const SET_CODE_PATTERN = /\b([A-Z]{3,5})\b/g;
+const SET_CODE_PATTERN = /\b([A-Z]{3,5})\b/;
+
+// ── Pokemon TCG types ────────────────────────────────────────────────────────
+interface PokemonSet {
+  id: string;
+  name: string;
+  total: number;
+  releaseDate: string;
+}
+
+interface PokemonCard {
+  id: string;
+  name: string;
+  set: { id: string; name: string };
+  number: string;
+  rarity?: string;
+  images: { small: string; large: string };
+  tcgplayer?: {
+    prices?: {
+      normal?: { market?: number };
+      holofoil?: { market?: number };
+      reverseHolofoil?: { market?: number };
+    };
+  };
+}
+
+async function fetchPokemonSets(): Promise<PokemonSet[]> {
+  const res = await fetch("https://api.pokemontcg.io/v2/sets?orderBy=-releaseDate&pageSize=250");
+  const json = await res.json();
+  return (json.data ?? []) as PokemonSet[];
+}
+
+async function searchPokemonCards(name: string, setId: string): Promise<PokemonCard[]> {
+  const q = `name:"${name}" set.id:${setId}`;
+  const res = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q)}`);
+  const json = await res.json();
+  return (json.data ?? []) as PokemonCard[];
+}
+
+function mapPokemonRarity(rarity?: string): "common" | "uncommon" | "rare" | "mythic" {
+  if (!rarity) return "common";
+  const r = rarity.toLowerCase();
+  if (r.includes("ultra rare") || r.includes("secret") || r.includes("rainbow") || r.includes("amazing")) return "mythic";
+  if (r.includes("rare")) return "rare";
+  if (r.includes("uncommon")) return "uncommon";
+  return "common";
+}
+
+function adaptPokemonCard(card: PokemonCard): QueuedCard {
+  const prices = card.tcgplayer?.prices;
+  const priceUsd = prices?.normal?.market ?? null;
+  const priceUsdFoil = prices?.holofoil?.market ?? prices?.reverseHolofoil?.market ?? null;
+  return {
+    localId: `${card.id}-${Date.now()}`,
+    scryfallId: card.id,
+    name: card.name,
+    setCode: card.set.id,
+    setName: card.set.name,
+    collectorNumber: card.number,
+    rarity: mapPokemonRarity(card.rarity),
+    colors: [],
+    thumbUri: card.images?.small ?? null,
+    imageUri: card.images?.large ?? null,
+    scryfallUri: null,
+    priceUsd,
+    priceUsdFoil,
+  };
+}
+
+// ── Unified card display helpers (MTG + Pokemon) ─────────────────────────────
+function getAnyCardThumb(card: any, isPokemon: boolean): string | null {
+  if (isPokemon) return (card as PokemonCard).images?.small ?? null;
+  return getSmallImageUri(card as ScryfallCard);
+}
+
+function getAnyCardMeta(card: any, isPokemon: boolean): string {
+  if (isPokemon) {
+    const c = card as PokemonCard;
+    return `${c.set?.name ?? ""} · #${c.number}`;
+  }
+  const c = card as ScryfallCard;
+  return `${c.mana_cost ? `${c.mana_cost}  ·  ` : ""}${c.set?.toUpperCase?.() ?? ""} #${c.collector_number}`;
+}
+
+function getAnyCardSubLine(card: any, isPokemon: boolean): string {
+  if (isPokemon) return (card as PokemonCard).rarity ?? "";
+  return (card as ScryfallCard).type_line ?? "";
+}
+
+function getAnyCardPrice(card: any, isPokemon: boolean): string | null {
+  if (isPokemon) {
+    const prices = (card as PokemonCard).tcgplayer?.prices;
+    const market = prices?.normal?.market ?? prices?.holofoil?.market ?? prices?.reverseHolofoil?.market;
+    return market != null ? `$${market.toFixed(2)}` : null;
+  }
+  const usd = (card as ScryfallCard).prices?.usd;
+  return usd ? `$${parseFloat(usd).toFixed(2)}` : null;
+}
 
 interface QueuedCard {
   localId: string;
@@ -53,13 +153,20 @@ interface QueuedCard {
   priceUsdFoil: number | null;
 }
 
+interface ReviewNeededItem {
+  localId: string;
+  ocrText: string;
+  candidates: ScryfallCard[];
+}
+
 function extractCardInfo(text: string): { name: string; collectorNumber?: string } | null {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  // Collapse newlines to spaces first — PSM.SINGLE_LINE still emits \n between words sometimes
+  const collapsed = text.replace(/\n+/g, " ");
+  // Strip all non-letter characters except spaces, hyphens, apostrophes
+  const cleanedText = collapsed.replace(/[^a-zA-Z\s'\-]/g, " ").replace(/\s\s+/g, " ").trim();
+  const lines = cleanedText.split("\n").map((l) => l.trim()).filter((l) => l.length > 2);
+  
   if (lines.length === 0) return null;
-  const cleanedLines = lines.map(l => l.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, ''));
-  const nameLine = cleanedLines.find(
-    (l) => l.length >= 2 && /[a-zA-Z]/.test(l) && !/^\d+$/.test(l)
-  );
 
   let collectorNumber: string | undefined;
   for (const line of lines) {
@@ -70,8 +177,22 @@ function extractCardInfo(text: string): { name: string; collectorNumber?: string
     }
   }
 
-  if (!nameLine && !collectorNumber) return null;
-  return { name: nameLine || "", collectorNumber };
+  // Find the likely card name
+  // Strategy: The first line that is mostly letters and not metadata
+  const nameLine = lines.find(line => 
+    !COLLECTOR_PATTERN.test(line) && 
+    /[a-zA-Z]{3,}/.test(line) &&
+    !SET_CODE_PATTERN.test(line)
+  );
+
+  const finalName = nameLine || lines[0];
+
+  // Final cleanup of the name to remove stray mana symbols or weird characters
+  // Leave spaces, hyphens and apostrophes (e.g. "Sage's Nouliths")
+  return { 
+    name: finalName ? finalName.replace(/[^a-zA-Z\s'-]/g, "").trim() : "", 
+    collectorNumber 
+  };
 }
 
 function getSmallImageUri(card: ScryfallCard): string | null {
@@ -102,11 +223,132 @@ function levenshteinDistance(a: string, b: string): number {
 }
 
 function stringSimilarity(a: string, b: string): number {
-  const aL = a.toLowerCase();
-  const bL = b.toLowerCase();
+  const aL = a.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  const bL = b.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+  // Levenshtein over the longer string
   const dist = levenshteinDistance(aL, bL);
   const maxLen = Math.max(aL.length, bL.length);
-  return maxLen === 0 ? 1 : 1 - dist / maxLen;
+  const levScore = maxLen === 0 ? 1 : 1 - dist / maxLen;
+
+  // Prefix boost: OCR often reads a truncated version of a long name.
+  // If every word in the OCR text appears as a prefix-sequence in the card name, score higher.
+  const aWords = aL.split(" ").filter(Boolean);
+  const bWords = bL.split(" ").filter(Boolean);
+  const prefixMatchCount = aWords.filter((w, i) => bWords[i]?.startsWith(w) || bWords[i] === w).length;
+  const prefixScore = aWords.length > 0 ? prefixMatchCount / Math.max(aWords.length, bWords.length) : 0;
+
+  return Math.max(levScore, prefixScore);
+}
+
+// ── Memoized queue row components (prevent re-renders when new cards are added) ─
+type QueueListItem =
+  | { type: "card";   data: QueuedCard }
+  | { type: "review"; data: ReviewNeededItem };
+
+interface QueueItemRowProps {
+  item: QueueListItem;
+  onReview: (item: ReviewNeededItem) => void;
+}
+
+const QueueItemRow = React.memo(function QueueItemRow({ item, onReview }: QueueItemRowProps) {
+  if (item.type === "card") {
+    const card = item.data;
+    return (
+      <View style={queueRowStyles.item}>
+        {card.thumbUri
+          ? <Image source={{ uri: card.thumbUri }} style={queueRowStyles.thumb} />
+          : <View style={[queueRowStyles.thumb, queueRowStyles.thumbPlaceholder]}>
+              <Text style={{ color: "#606078" }}>🃏</Text>
+            </View>
+        }
+        <Text style={queueRowStyles.name} numberOfLines={1}>{card.name}</Text>
+        <Text style={queueRowStyles.price}>
+          {card.priceUsd ? `$${card.priceUsd.toFixed(2)}` : "—"}
+        </Text>
+      </View>
+    );
+  }
+  const rev = item.data;
+  return (
+    <Pressable style={queueRowStyles.reviewItem} onPress={() => onReview(rev)}>
+      <View style={[queueRowStyles.thumb, queueRowStyles.thumbPlaceholder]}>
+        <Text style={{ color: "#f59e0b", fontSize: 16 }}>?</Text>
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={queueRowStyles.reviewText} numberOfLines={1}>"{rev.ocrText || "Unknown"}"</Text>
+        <View style={queueRowStyles.reviewBadge}>
+          <Text style={queueRowStyles.reviewBadgeText}>Review Needed — tap to fix</Text>
+        </View>
+      </View>
+    </Pressable>
+  );
+});
+
+const queueRowStyles = StyleSheet.create({
+  item:             { flexDirection: "row", alignItems: "center", paddingVertical: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderColor: "#12121a" },
+  thumb:            { width: 36, height: 36, borderRadius: 4, marginRight: 10 },
+  thumbPlaceholder: { backgroundColor: "#1a1a26", alignItems: "center", justifyContent: "center" },
+  name:             { flex: 1, color: "#e0e0f0", fontSize: 13, fontWeight: "600" },
+  price:            { color: "#c89b3c", fontSize: 12, fontWeight: "700", marginLeft: 6 },
+  reviewItem:       { flexDirection: "row", alignItems: "center", paddingVertical: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderColor: "#12121a" },
+  reviewText:       { color: "#f59e0b", fontSize: 13 },
+  reviewBadge:      { marginTop: 2 },
+  reviewBadgeText:  { color: "#a0601a", fontSize: 11, fontWeight: "700" },
+});
+
+// ── Audio feedback (Web Audio API — zero extra packages) ─────────────────────
+function playTone(type: "success" | "review" | "commit") {
+  if (typeof window === "undefined") return;
+  try {
+    const Ctx = (window as any).AudioContext ?? (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx: AudioContext = new Ctx();
+    const t = ctx.currentTime;
+
+    if (type === "success") {
+      // Crisp high tick: short 1047 Hz sine
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(1047, t);
+      gain.gain.setValueAtTime(0.09, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+      osc.start(t); osc.stop(t + 0.08);
+    } else if (type === "review") {
+      // Muted low buzz: short sawtooth at 220 Hz
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(220, t);
+      gain.gain.setValueAtTime(0.06, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      osc.start(t); osc.stop(t + 0.22);
+    } else {
+      // Commit celebration: ascending four-note chord (C5–E5–G5–C6)
+      [523, 659, 784, 1047].forEach((freq, i) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = "sine";
+        const start = t + i * 0.09;
+        o.frequency.setValueAtTime(freq, start);
+        g.gain.setValueAtTime(0.1, start);
+        g.gain.exponentialRampToValueAtTime(0.001, start + 0.18);
+        o.start(start); o.stop(start + 0.18);
+      });
+    }
+    setTimeout(() => { try { ctx.close(); } catch {} }, 1000);
+  } catch { /* audio blocked / unsupported — silent fail */ }
+}
+
+/** navigator.vibrate fallback for web (no-op on unsupported browsers) */
+function vibrateWeb(pattern: number | number[]) {
+  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+    navigator.vibrate(pattern);
+  }
 }
 
 export default function ScannerScreen() {
@@ -117,8 +359,9 @@ export default function ScannerScreen() {
   const [isSecureContext, setIsSecureContext] = useState(true);
   const [webChecking, setWebChecking] = useState(Platform.OS === "web");
 
-  const { activeSession, setPendingCard } = useAppStore();
+  const { activeSession, setPendingCard, isPokemonUser, setIsPokemonUser } = useAppStore();
   const [scanning, setScanning] = useState(false);
+  const isMounted = useRef(true);
   const [lastScanned, setLastScanned] = useState<string | null>(null);
   const [flash, setFlash] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -130,18 +373,62 @@ export default function ScannerScreen() {
   // Set selection
   const [selectedSet, setSelectedSet] = useState<{ code: string; name: string } | null>(null);
   const [setList, setSetList] = useState<ScryfallSet[]>([]);
+  const [pokemonSetList, setPokemonSetList] = useState<PokemonSet[]>([]);
   const [setsLoading, setSetsLoading] = useState(false);
   const [setPickerOpen, setSetPickerOpen] = useState(false);
   const [setFilter, setSetFilter] = useState("");
+  const [recentSetCodes, setRecentSetCodes] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem("recentSets") ?? "[]"); } catch { return []; }
+  });
 
   // Single-mode result picker modal
   const [resultModalVisible, setResultModalVisible] = useState(false);
   const [resultCandidates, setResultCandidates] = useState<ScryfallCard[]>([]);
+  const [noTextCount, setNoTextCount] = useState(0);
+  const [debugImage, setDebugImage] = useState<string | null>(null);
+  const [setCards, setSetCards] = useState<ScryfallCard[]>([]);
+
+  const workerRef = useRef<any>(null);
+
+  // Initialize OCR worker once
+  useEffect(() => {
+    let active = true;
+    const setup = async () => {
+      try {
+        const worker = await Tesseract.createWorker("eng");
+        // PSM 7 = single text line. Whitelist prevents symbol noise ({~|-) from card frame icons.
+        await worker.setParameters({
+          tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE,
+          tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz '-,",
+        });
+        if (active) workerRef.current = worker;
+      } catch (err) {
+        console.error("Worker init failed:", err);
+      }
+    };
+    setup();
+    return () => {
+      active = false;
+      isMounted.current = false;
+      workerRef.current?.terminate();
+    };
+  }, []);
 
   // Rapid mode queue
   const [rapidQueue, setRapidQueue] = useState<QueuedCard[]>([]);
   const [queueExpanded, setQueueExpanded] = useState(true);
   const [isCommitting, setIsCommitting] = useState(false);
+
+  // Non-blocking review queue (Feature 2)
+  const [needsReview, setNeedsReview] = useState<ReviewNeededItem[]>([]);
+  const [reviewingItem, setReviewingItem] = useState<ReviewNeededItem | null>(null);
+
+  // Auto-capture (Feature 3)
+  const [autoCaptureActive, setAutoCaptureActive] = useState(false);
+
+  // Debugging state
+  const [lastOcrFull, setLastOcrFull] = useState<string | null>(null);
+  const [lastOcrExtracted, setLastOcrExtracted] = useState<{name: string, collector?: string} | null>(null);
 
   // Toast
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -155,23 +442,76 @@ export default function ScannerScreen() {
 
   // Success flash animation
   const flashAnim = useRef(new Animated.Value(0)).current;
+  // Auto-capture countdown progress (0 → 1 over 1.5 s)
+  const countdownAnim = useRef(new Animated.Value(0)).current;
 
-  const cooldownRef = useRef(false);
+  const cooldownRef  = useRef(false);
+  const hydratedRef  = useRef(false);  // guard: run hydration exactly once
   const cameraRef = useRef<CameraView>(null);
   const videoRef = useRef<any>(null);
+  const guideRef = useRef<View>(null);
   const canvasRef = useRef<any>(null);
+  // Stability detection refs (Feature 3)
+  const prevPixelsRef = useRef<Uint8ClampedArray | null>(null);
+  const stableFramesRef = useRef(0);
+  // Always-current ref to captureManual so effects avoid stale closures
+  const captureManualRef = useRef<(silent?: boolean) => Promise<boolean>>(async () => false);
 
-  // Fetch set list on mount
+  // Fetch set list — branches on isPokemonUser; reset selected set when mode flips
   useEffect(() => {
+    setSelectedSet(null);
     setSetsLoading(true);
-    fetchMtgSets()
-      .then(sets => setSetList(sets))
-      .catch(console.error)
-      .finally(() => setSetsLoading(false));
+    if (isPokemonUser) {
+      fetchPokemonSets()
+        .then(sets => setPokemonSetList(sets))
+        .catch(console.error)
+        .finally(() => setSetsLoading(false));
+    } else {
+      fetchMtgSets()
+        .then(sets => setSetList(sets))
+        .catch(console.error)
+        .finally(() => setSetsLoading(false));
+    }
     return () => {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
-  }, []);
+  }, [isPokemonUser]);
+
+  // ── Auto-save rapidQueue to localStorage after every change ─────────────────
+  useEffect(() => {
+    if (rapidQueue.length === 0) return; // nothing to persist
+    try {
+      localStorage.setItem("mtg_draft_queue", JSON.stringify({
+        queue: rapidQueue,
+        savedAt: Date.now(),
+        sessionId: activeSession?.id ?? null,
+      }));
+    } catch { /* storage full or blocked — non-fatal */ }
+  }, [rapidQueue, activeSession?.id]);
+
+  // ── Hydrate from localStorage on first mount ─────────────────────────────────
+  useEffect(() => {
+    if (hydratedRef.current) return;
+    hydratedRef.current = true;
+    try {
+      const raw = localStorage.getItem("mtg_draft_queue");
+      if (!raw) return;
+      const { queue, savedAt } = JSON.parse(raw) as { queue: QueuedCard[]; savedAt: number; sessionId: string | null };
+      if (!Array.isArray(queue) || queue.length === 0) return;
+      if (Date.now() - savedAt > 24 * 60 * 60 * 1000) {
+        localStorage.removeItem("mtg_draft_queue"); // stale — discard silently
+        return;
+      }
+      Alert.alert(
+        "Unsaved Scan Session",
+        `You have ${queue.length} unsaved card${queue.length !== 1 ? "s" : ""} from a previous scan. Resume?`,
+        [
+          { text: "Clear", style: "destructive", onPress: () => localStorage.removeItem("mtg_draft_queue") },
+          { text: "Resume", onPress: () => setRapidQueue(queue) },
+        ],
+      );
+    } catch { /* nothing to restore */ }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (Platform.OS === "web") {
@@ -211,6 +551,12 @@ export default function ScannerScreen() {
   useFocusEffect(
     useCallback(() => {
       setScanning(true);
+      // Clear result panel every time the scanner re-focuses so returning from
+      // the confirm screen doesn't leave stale candidates visible.
+      setResultModalVisible(false);
+      setResultCandidates([]);
+      setLastScanned(null);
+      cooldownRef.current = false;
       return () => {
         setScanning(false);
       };
@@ -256,6 +602,13 @@ export default function ScannerScreen() {
     };
   }, [webPermissionGranted, scanning, selectedSet]);
 
+  // Fetch card list for the selected set for local fuzzy matching
+  useEffect(() => {
+    if (selectedSet) {
+      fetchCardsBySet(selectedSet.code).then(setSetCards).catch(e => console.error("Cache failed:", e));
+    }
+  }, [selectedSet]);
+
   const handleOcrResult = useCallback(
     async (recognizedText: string) => {
       if (cooldownRef.current) return;
@@ -266,6 +619,7 @@ export default function ScannerScreen() {
       if (!selectedSet) return;
 
       const info = extractCardInfo(recognizedText);
+      setLastOcrExtracted(info);
       if (!info) return;
 
       // Sanitize: strip non-alphanumeric chars before searching
@@ -281,27 +635,69 @@ export default function ScannerScreen() {
       try {
         let results: ScryfallCard[] = [];
 
-        // 1. Try exact match by collector number if found
-        if (info.collectorNumber) {
+        // 1. Try name search FIRST (as requested)
+        if (sanitizedName) {
+          // A. Try LOCAL fuzzy match first for speed & resilience
+          let localMatches: { card: ScryfallCard; score: number }[] = [];
+          if (setCards.length > 0) {
+            localMatches = setCards
+              .map(c => ({ card: c, score: stringSimilarity(sanitizedName, c.name) }))
+              .filter(m => m.score > 0.4)
+              .sort((a, b) => b.score - a.score)
+              .slice(0, 8);
+
+            if (localMatches.length > 0 && localMatches[0].score > 0.85) {
+              console.log("Local Fuzzy WIN:", localMatches[0].card.name, "score:", localMatches[0].score);
+              results = [localMatches[0].card];
+            }
+          }
+
+          // B. Use Scryfall autocomplete as a spell-checker for the OCR name,
+          //    then search the corrected name in the set.
+          if (results.length === 0) {
+            try {
+              const suggestions = await autocompleteCardName(sanitizedName);
+              const corrected = suggestions[0];
+              if (corrected && corrected.toLowerCase() !== sanitizedName.toLowerCase()) {
+                console.log("Autocomplete correction:", sanitizedName, "→", corrected);
+                results = await searchCardByNameInSet(corrected, selectedSet.code);
+              }
+            } catch { /* non-fatal */ }
+          }
+
+          // C. Direct Scryfall search with the original sanitized name
+          if (results.length === 0) {
+            results = await searchCardByNameInSet(sanitizedName, selectedSet.code);
+          }
+
+          // D. If Scryfall also returned nothing, surface local candidates so the
+          //    user can still pick the right card rather than seeing "No match"
+          if (results.length === 0 && localMatches.length > 0) {
+            console.log("Falling back to local candidates:", localMatches.map(m => m.card.name));
+            results = localMatches.map(m => m.card);
+          }
+        }
+
+        // 2. Fallback to exact match by collector number if name search fails
+        if (results.length === 0 && info.collectorNumber) {
           const exactCard = await getCardBySetAndNumber(selectedSet.code, info.collectorNumber);
           if (exactCard) results = [exactCard];
         }
 
-        // 2. Fallback to name search
-        if (results.length === 0 && sanitizedName) {
-          results = await searchCardByNameInSet(sanitizedName, selectedSet.code);
-        }
-
         if (scanMode === "rapid") {
           if (results.length === 0) {
-            // No match → open Review Scan modal
-            setReviewEditText(sanitizedName);
-            setReviewResults([]);
-            setReviewModalVisible(true);
+            // No match → silently ignore garbage frames so we don't spam the review queue.
+            // The camera will keep rolling and likely grab a clearer frame next.
             return;
           }
 
           const top = results[0];
+          
+          // Bail entirely if we already successfully scanned this exact card
+          if (rapidQueue.some(q => q.scryfallId === top.id)) {
+            return;
+          }
+
           const similarity = stringSimilarity(sanitizedName, top.name);
 
           if (similarity >= 0.7) {
@@ -323,13 +719,31 @@ export default function ScannerScreen() {
               priceUsdFoil: norm.priceUsdFoil,
             };
             setRapidQueue(prev => [queued, ...prev]);
-            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            
+            // Clean up any pending review items for this card now that we got it
+            setNeedsReview(prev => prev.filter(r => !r.candidates.some(c => c.id === top.id)));
+            
+            // Light haptic pop + crisp tick on success
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            vibrateWeb(30);
+            playTone("success");
             triggerSuccessFlash();
           } else {
-            // Low confidence → open Review Scan modal with pre-loaded results
-            setReviewEditText(sanitizedName);
-            setReviewResults(results);
-            setReviewModalVisible(true);
+            // Low confidence → deduplicating push to review queue
+            setNeedsReview(prev => {
+              if (prev.some(r => r.candidates[0]?.id === top.id)) {
+                return prev; // We already have a review item for this card's top guess
+              }
+              return [
+                ...prev,
+                { localId: `review-${Date.now()}`, ocrText: sanitizedName, candidates: results },
+              ];
+            });
+            // Heavy double-buzz + muted error tone to signal failure without looking
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            vibrateWeb([40, 60, 40]);
+            playTone("review");
+            showToast("Low confidence — flagged for review");
           }
         } else {
           // Single mode: show result picker
@@ -337,8 +751,11 @@ export default function ScannerScreen() {
             showToast("No match in set — try again");
             return;
           }
-          if (autoScan) setAutoScan(false);
-          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          // Only stop auto-scan on native devices; keep it running on web side-panel
+          if (autoScan && !isWeb) setAutoScan(false);
+          await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          vibrateWeb(30);
+          playTone("success");
           setResultCandidates(results);
           setResultModalVisible(true);
         }
@@ -349,15 +766,18 @@ export default function ScannerScreen() {
         setTimeout(() => { cooldownRef.current = false; }, 3000);
       }
     },
-    [activeSession, lastScanned, autoScan, selectedSet, scanMode, showToast, triggerSuccessFlash]
+    [activeSession, lastScanned, autoScan, selectedSet, scanMode, showToast, triggerSuccessFlash, rapidQueue, needsReview]
   );
 
   const handleResultSelect = useCallback(async (tappedCard: ScryfallCard) => {
     setResultModalVisible(false);
+    // Snapshot candidates before clearing them for the navigation params
+    const snapshot = resultCandidates;
+    setResultCandidates([]);
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     setPendingCard(null);
     // Put tapped card first so confirm screen shows it selected by default
-    const reordered = [tappedCard, ...resultCandidates.filter(c => c.id !== tappedCard.id)];
+    const reordered = [tappedCard, ...snapshot.filter(c => c.id !== tappedCard.id)];
     router.push({
       pathname: "/confirm",
       params: { candidates: JSON.stringify(reordered), sessionId: activeSession?.id ?? "" },
@@ -377,6 +797,14 @@ export default function ScannerScreen() {
     }
   }, [selectedSet]);
 
+  // Open the review modal for a flagged item in the review queue
+  const openReviewItem = useCallback((item: ReviewNeededItem) => {
+    setReviewingItem(item);
+    setReviewEditText(item.ocrText);
+    setReviewResults(item.candidates);
+    setReviewModalVisible(true);
+  }, []);
+
   const handleReviewSelect = useCallback(async (card: ScryfallCard) => {
     setReviewModalVisible(false);
     const norm = normalizeScryfallCard(card);
@@ -395,10 +823,15 @@ export default function ScannerScreen() {
       priceUsd: norm.priceUsd,
       priceUsdFoil: norm.priceUsdFoil,
     };
+    // If resolving a flagged review item, remove it from the review queue
+    if (reviewingItem) {
+      setNeedsReview(prev => prev.filter(r => r.localId !== reviewingItem.localId));
+      setReviewingItem(null);
+    }
     setRapidQueue(prev => [queued, ...prev]);
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     triggerSuccessFlash();
-  }, [triggerSuccessFlash]);
+  }, [reviewingItem, triggerSuccessFlash]);
 
   const commitBatch = async () => {
     if (rapidQueue.length === 0 || !activeSession || isCommitting) return;
@@ -422,7 +855,11 @@ export default function ScannerScreen() {
         imageUri: c.imageUri,
         scryfallUri: c.scryfallUri,
       })));
+      // Commit celebration: success notification + ascending chord + triple buzz
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      vibrateWeb([50, 30, 100]);
+      playTone("commit");
+      localStorage.removeItem("mtg_draft_queue"); // wipe the auto-save cache
       setRapidQueue([]);
       showToast(`✓ ${count} card${count !== 1 ? "s" : ""} saved to vault`);
     } catch (e) {
@@ -433,45 +870,91 @@ export default function ScannerScreen() {
     }
   };
 
-  const captureManual = async (silent = false) => {
-    if (isProcessing) return;
+  const captureManual = async (silent = false): Promise<boolean> => {
+    if (isProcessing) return false;
     setIsProcessing(true);
     try {
       if (Platform.OS === "web") {
-        if (videoRef.current && canvasRef.current) {
-          const video = videoRef.current;
-          const canvas = canvasRef.current;
-          const vW = video.videoWidth;
-          const vH = video.videoHeight;
-          const scale = Math.min(vW / SCREEN_WIDTH, vH / SCREEN_HEIGHT);
-          const cropW = CARD_WIDTH * scale;
-          const cardHCanvas = CARD_HEIGHT * scale;
-          const topCropH = cardHCanvas * 0.15;
-          const botCropH = cardHCanvas * 0.12;
+          const guide = guideRef.current as unknown as HTMLDivElement;
+          if (videoRef.current && canvasRef.current && guide) {
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            
+            if (!video.videoWidth || !video.videoHeight) {
+              console.log("Video dimensions not ready, skipping...");
+              return false;
+            }
+            
+            const rectV = video.getBoundingClientRect();
+            const rectG = guide.getBoundingClientRect();
+            
+            const vW = video.videoWidth;
+            const vH = video.videoHeight;
+            
+            const scaleX = vW / rectV.width;
+            const scaleY = vH / rectV.height;
+            
+            const sx = (rectG.left - rectV.left) * scaleX;
+            const sy = (rectG.top - rectV.top) * scaleY;
+            const sw = rectG.width * scaleX;
+            const sh = rectG.height * scaleY;
 
-          const sx = (vW - cropW) / 2;
-          const sy = (vH - cardHCanvas) / 2;
+            // Inset horizontally to skip decorative card frame icons on left (~12%) and
+            // element-cost circles on right (~18%) that pollute OCR with symbol noise.
+            const insetL = sw * 0.08;
+            const insetR = sw * 0.10;
+            const ocrSx = sx + insetL;
+            const ocrSw = sw - insetL - insetR;
 
-          canvas.width = cropW;
-          canvas.height = topCropH + botCropH;
-          const ctx = canvas.getContext("2d");
+            // 2x upscale before OCR — Tesseract accuracy improves significantly on larger images
+            const OCR_SCALE = 2;
+            canvas.width = ocrSw * OCR_SCALE;
+            canvas.height = sh * OCR_SCALE;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+              ctx.imageSmoothingEnabled = true;
+              ctx.imageSmoothingQuality = "high";
+              ctx.drawImage(video, ocrSx, sy, ocrSw, sh, 0, 0, canvas.width, canvas.height);
 
-          // Draw top (Card Name)
-          ctx?.drawImage(video, sx, sy, cropW, topCropH, 0, 0, cropW, topCropH);
-          // Draw bottom (Collector Info)
-          ctx?.drawImage(video, sx, sy + cardHCanvas - botCropH, cropW, botCropH, 0, topCropH, cropW, botCropH);
+              // Grayscale + high-contrast pass to help Tesseract read stylized card fonts
+              const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const data = imgData.data;
+              for (let i = 0; i < data.length; i += 4) {
+                const r = data[i], g = data[i+1], b = data[i+2];
+                const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+                // Contrast factor 2.0 for bolder text separation
+                const contrast = 2.0;
+                let val = (contrast * (gray - 128)) + 128;
+                val = Math.max(0, Math.min(255, val));
+                data[i] = data[i+1] = data[i+2] = val;
+              }
+              ctx.putImageData(imgData, 0, 0);
+            }
 
-          const base64Data = canvas.toDataURL("image/jpeg", 0.9);
-          console.log("Starting Web OCR analysis on Cropped Image...");
-          const worker = await Tesseract.createWorker("eng");
-          const { data: { text } } = await worker.recognize(base64Data);
-          await worker.terminate();
+            const base64Data = canvas.toDataURL("image/jpeg", 0.95);
+            setDebugImage(base64Data);
+          
+          if (!workerRef.current) {
+            console.log("Worker not ready, skipping OCR pass...");
+            return false;
+          }
+
+          const { data: { text } } = await workerRef.current.recognize(base64Data);
+          setDebugImage(null); // discard base64 from state immediately after OCR
+          console.log("--- WEB OCR DEBUG (BoundRect Mapping) ---");
+          console.log("Video Size:", vW, "x", vH);
+          console.log("Display Rect:", rectV.width.toFixed(0), "x", rectV.height.toFixed(0));
+          console.log("Scale X/Y:", scaleX.toFixed(2), scaleY.toFixed(2));
+          console.log("Crop Region (sx, sy, sw, sh):", sx.toFixed(0), sy.toFixed(0), sw.toFixed(0), sh.toFixed(0));
           console.log("OCR Text Extracted:\n", text);
+          setLastOcrFull(text);
           if (text.trim()) {
             await handleOcrResult(text);
+            return true;
           } else if (!silent) {
             if (window) window.alert("Could not read any text. Try getting closer or improving lighting.");
           }
+          return false;
         }
       } else {
         if (cameraRef.current) {
@@ -479,19 +962,54 @@ export default function ScannerScreen() {
           const photo = await cameraRef.current.takePictureAsync({ base64: true });
           if (photo?.uri) {
             console.log("Starting Native OCR analysis on Cropped Image...");
-            const cropW = photo.width * 0.75;
-            const cardH = cropW / CARD_RATIO;
-            const originX = (photo.width - cropW) / 2;
-            const originY = (photo.height - cardH) / 2;
+
+            // ── Feature 1: Map the visual overlay to photo coordinates ──
+            // The guide overlay occupies: width=CARD_WIDTH, height=TITLE_HEIGHT,
+            // horizontally centred, vertically centred on the full screen.
+            const guideScreenX = (SCREEN_WIDTH - CARD_WIDTH) / 2;
+            const guideScreenY = (SCREEN_HEIGHT - TITLE_HEIGHT) / 2;
+
+            // Camera fills the screen with "cover" semantics.
+            const screenAspect = SCREEN_WIDTH / SCREEN_HEIGHT;
+            const photoAspect  = photo.width  / photo.height;
+
+            let scale: number, offsetX: number, offsetY: number;
+            if (photoAspect > screenAspect) {
+              // Photo is wider than screen – sides cropped in the preview
+              scale   = photo.height / SCREEN_HEIGHT;
+              offsetX = (photo.width - SCREEN_WIDTH * scale) / 2;
+              offsetY = 0;
+            } else {
+              // Photo is taller than screen – top/bottom cropped in the preview
+              scale   = photo.width / SCREEN_WIDTH;
+              offsetX = 0;
+              offsetY = (photo.height - SCREEN_HEIGHT * scale) / 2;
+            }
+
+            // Inset left 8% and right 10% to skip decorative card icons and element circles
+            const rawOriginX = Math.round(guideScreenX * scale + offsetX);
+            const rawCropW   = Math.round(CARD_WIDTH * scale);
+            const insetLpx   = Math.round(rawCropW * 0.08);
+            const insetRpx   = Math.round(rawCropW * 0.10);
+            const originX = Math.max(0, rawOriginX + insetLpx);
+            const originY = Math.max(0, Math.round(guideScreenY * scale + offsetY));
+            const cropW   = Math.min(rawCropW - insetLpx - insetRpx, photo.width - originX);
+            const cropH   = Math.min(Math.round(TITLE_HEIGHT * scale), photo.height - originY);
+
             const cropped = await ImageManipulator.manipulateAsync(
               photo.uri,
-              [{ crop: { originX, originY, width: cropW, height: cardH } }],
+              [{ crop: { originX, originY, width: cropW, height: cropH } }],
               { base64: true, format: ImageManipulator.SaveFormat.JPEG, compress: 0.9 }
             );
-            const worker = await Tesseract.createWorker("eng");
-            const { data: { text } } = await worker.recognize(`data:image/jpeg;base64,${cropped.base64}`);
-            await worker.terminate();
+
+            if (cropped.base64) setDebugImage(`data:image/jpeg;base64,${cropped.base64}`);
+            if (!workerRef.current) return false;
+            const { data: { text } } = await workerRef.current.recognize(`data:image/jpeg;base64,${cropped.base64}`);
+            setDebugImage(null); // discard base64 from state immediately after OCR
+            console.log("--- NATIVE OCR DEBUG ---");
+            console.log("Photo Size:", photo.width, "x", photo.height);
             console.log("OCR Text Extracted:\n", text);
+            setLastOcrFull(text);
             if (text.trim()) {
               await handleOcrResult(text);
             } else if (!silent) {
@@ -506,22 +1024,160 @@ export default function ScannerScreen() {
     } finally {
       setIsProcessing(false);
     }
+    return false;
   };
 
-  // Continuous background scanner hook
+  // Continuous background scanner — Single mode only
   useEffect(() => {
+    if (scanMode === "rapid") return; // rapid mode uses its own auto-capture loop below
     let timeoutId: ReturnType<typeof setTimeout>;
     const performAutoScan = async () => {
+      if (!isMounted.current) return;
       if (!autoScan || isProcessing || !scanning) {
         if (autoScan) timeoutId = setTimeout(performAutoScan, 1000);
         return;
       }
-      await captureManual(true);
-      timeoutId = setTimeout(performAutoScan, 2000);
+      try {
+        const foundText = await captureManual(true);
+        const delay = foundText ? 2000 : 3500;
+        if (isMounted.current) timeoutId = setTimeout(performAutoScan, delay);
+      } catch (err) {
+        console.error("AutoScan loop error:", err);
+        if (isMounted.current) timeoutId = setTimeout(performAutoScan, 5000);
+      }
     };
     if (autoScan) performAutoScan();
     return () => clearTimeout(timeoutId);
-  }, [autoScan, isProcessing, scanning]);
+  }, [autoScan, isProcessing, scanning, scanMode]);
+
+  // ── Feature 3: Web stability detection (pixel comparison) ──────────────────
+  useEffect(() => {
+    if (!autoCaptureActive || !isWeb || scanMode !== "rapid" || !scanning) {
+      prevPixelsRef.current = null;
+      stableFramesRef.current = 0;
+      countdownAnim.setValue(0);
+      return;
+    }
+
+    const checkStability = () => {
+      if (!isMounted.current) return;
+      const video = videoRef.current;
+      const guide = guideRef.current as unknown as HTMLDivElement;
+      if (!video || !guide || !video.videoWidth) return;
+
+      try {
+        const rectV = video.getBoundingClientRect();
+        const rectG = guide.getBoundingClientRect();
+        const vW = video.videoWidth, vH = video.videoHeight;
+        const scaleX = vW / rectV.width;
+        const scaleY = vH / rectV.height;
+
+        // Down-sample to a small patch for speed (60×20 px)
+        const sampleW = 60, sampleH = 20;
+        const tmpCanvas = document.createElement("canvas");
+        tmpCanvas.width = sampleW;
+        tmpCanvas.height = sampleH;
+        const ctx = tmpCanvas.getContext("2d");
+        if (!ctx) return;
+
+        const sx = (rectG.left - rectV.left) * scaleX;
+        const sy = (rectG.top  - rectV.top)  * scaleY;
+        const sw = rectG.width  * scaleX;
+        const sh = rectG.height * scaleY;
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sampleW, sampleH);
+
+        const current = ctx.getImageData(0, 0, sampleW, sampleH).data;
+
+        if (prevPixelsRef.current && current.length === prevPixelsRef.current.length) {
+          let diff = 0;
+          for (let i = 0; i < current.length; i += 4) {
+            diff += Math.abs(current[i]     - prevPixelsRef.current[i]);
+            diff += Math.abs(current[i + 1] - prevPixelsRef.current[i + 1]);
+            diff += Math.abs(current[i + 2] - prevPixelsRef.current[i + 2]);
+          }
+          const avgDiff = diff / (sampleW * sampleH * 3);
+
+          if (avgDiff < 10) {
+            stableFramesRef.current = Math.min(stableFramesRef.current + 1, 3);
+          } else {
+            stableFramesRef.current = 0;
+          }
+        } else {
+          stableFramesRef.current = 0;
+        }
+
+        const progress = stableFramesRef.current / 3;
+        countdownAnim.setValue(progress);
+
+        if (stableFramesRef.current >= 3) {
+          // Stable for 1.5 s — fire!
+          stableFramesRef.current = 0;
+          prevPixelsRef.current = null;
+          countdownAnim.setValue(0);
+          captureManualRef.current(true);
+        } else {
+          prevPixelsRef.current = current;
+        }
+      } catch (_) {
+        // Security errors from cross-origin canvas etc. — ignore silently
+      }
+    };
+
+    const id = setInterval(checkStability, 500);
+    return () => {
+      clearInterval(id);
+      prevPixelsRef.current = null;
+      stableFramesRef.current = 0;
+      countdownAnim.setValue(0);
+    };
+  }, [autoCaptureActive, isWeb, scanMode, scanning]);
+
+  // ── Feature 3: Native countdown auto-capture ───────────────────────────────
+  useEffect(() => {
+    if (!autoCaptureActive || isWeb || scanMode !== "rapid" || !scanning) {
+      countdownAnim.stopAnimation();
+      countdownAnim.setValue(0);
+      return;
+    }
+
+    let cancelled = false;
+
+    const runCycle = () => {
+      if (cancelled || !isMounted.current) return;
+      countdownAnim.setValue(0);
+      Animated.timing(countdownAnim, {
+        toValue: 1,
+        duration: 1500,
+        useNativeDriver: false,
+      }).start(async ({ finished }) => {
+        if (!finished || cancelled || !isMounted.current) return;
+        await captureManualRef.current(true);
+        // Brief pause between captures so the queue can update
+        setTimeout(() => { if (!cancelled) runCycle(); }, 400);
+      });
+    };
+
+    runCycle();
+    return () => {
+      cancelled = true;
+      countdownAnim.stopAnimation();
+      countdownAnim.setValue(0);
+    };
+  }, [autoCaptureActive, isWeb, scanMode, scanning]);
+
+  // Auto-enable rapid auto-capture when switching to Rapid mode
+  useEffect(() => {
+    if (scanMode === "rapid") {
+      setAutoCaptureActive(true);
+    } else {
+      setAutoCaptureActive(false);
+      prevPixelsRef.current = null;
+      stableFramesRef.current = 0;
+    }
+  }, [scanMode]);
+
+  // Keep the ref in sync with the latest closure on every render
+  captureManualRef.current = captureManual;
 
   const filteredSets = setFilter.trim()
     ? setList.filter(s =>
@@ -530,11 +1186,15 @@ export default function ScannerScreen() {
       )
     : setList;
 
+  // Recently used sets (resolved to full objects), shown above all others when no filter active
+  const recentSets = recentSetCodes
+    .map(code => setList.find(s => s.code === code))
+    .filter((s): s is ScryfallSet => !!s);
+
   const queueTotalValue = rapidQueue.reduce((sum, c) => sum + (c.priceUsd ?? 0), 0);
 
   const isNativePermGranted = permission?.granted;
   const isWebPermGranted = webPermissionGranted;
-  const isWeb = Platform.OS === "web";
   const canScan = !!selectedSet;
 
   if ((!isWeb && !permission) || (isWeb && webChecking)) {
@@ -613,6 +1273,34 @@ export default function ScannerScreen() {
           <Text style={styles.gateEmpty}>No sets found.</Text>
         ) : (
           <ScrollView style={styles.gateList} keyboardShouldPersistTaps="handled">
+            {/* Recently used — only shown when no active search filter */}
+            {!setFilter.trim() && recentSets.length > 0 && (
+              <>
+                <Text style={styles.gateSection}>Recently Used</Text>
+                {recentSets.map(s => (
+                  <Pressable
+                    key={`recent-${s.code}`}
+                    style={[styles.gateItem, styles.gateItemRecent]}
+                    onPress={() => {
+                      setSelectedSet({ code: s.code, name: s.name });
+                      setSetFilter("");
+                      const next = [s.code, ...recentSetCodes.filter(c => c !== s.code)].slice(0, 3);
+                      setRecentSetCodes(next);
+                      try { localStorage.setItem("recentSets", JSON.stringify(next)); } catch {}
+                    }}
+                  >
+                    <View style={styles.gateItemLeft}>
+                      <Text style={styles.gateItemName}>{s.name}</Text>
+                      <Text style={styles.gateItemMeta}>
+                        {s.code.toUpperCase()} · {s.card_count} cards · {s.released_at?.slice(0, 4)}
+                      </Text>
+                    </View>
+                    <Text style={styles.gateItemArrow}>→</Text>
+                  </Pressable>
+                ))}
+                <Text style={styles.gateSection}>All Sets</Text>
+              </>
+            )}
             {filteredSets.map(s => (
               <Pressable
                 key={s.code}
@@ -620,6 +1308,9 @@ export default function ScannerScreen() {
                 onPress={() => {
                   setSelectedSet({ code: s.code, name: s.name });
                   setSetFilter("");
+                  const next = [s.code, ...recentSetCodes.filter(c => c !== s.code)].slice(0, 3);
+                  setRecentSetCodes(next);
+                  try { localStorage.setItem("recentSets", JSON.stringify(next)); } catch {}
                 }}
               >
                 <View style={styles.gateItemLeft}>
@@ -636,6 +1327,8 @@ export default function ScannerScreen() {
       </View>
     );
   }
+
+  const debugOcrVisible = !!lastOcrFull;
 
   return (
     <View style={styles.container}>
@@ -692,8 +1385,7 @@ export default function ScannerScreen() {
                 <Text style={[styles.modeBtnText, scanMode === "single" && styles.modeBtnTextActive]}>
                   Single
                 </Text>
-              </Pressable>
-              <Pressable
+              </Pressable><Pressable
                 style={[styles.modeBtn, scanMode === "rapid" && styles.modeBtnRapid]}
                 onPress={() => setScanMode("rapid")}
               >
@@ -734,12 +1426,15 @@ export default function ScannerScreen() {
           <View style={styles.overlayDim} />
           <View style={styles.overlayRow}>
             <View style={styles.overlayDim} />
-            <View style={styles.cardFrame}>
+            <View
+              ref={guideRef}
+              style={[
+                styles.cardFrame,
+                autoCaptureActive && scanMode === "rapid" && styles.cardFrameActive,
+              ]}
+            >
               <View style={styles.targetBoxTop}>
-                <Text style={styles.targetLabel}>Card Name</Text>
-              </View>
-              <View style={styles.targetBoxBottom}>
-                <Text style={styles.targetLabel}>Collector #</Text>
+                <Text style={styles.targetLabel}>Card Name Only</Text>
               </View>
             </View>
             <View style={styles.overlayDim} />
@@ -747,8 +1442,49 @@ export default function ScannerScreen() {
           <View style={[styles.overlayDim, { paddingTop: 20, alignItems: "center" }]}>
             <Text style={styles.frameHelper}>Webcams generally have fixed focus lenses.</Text>
             <Text style={styles.frameHelperSub}>Hold MTG card 8-12 inches away</Text>
+
+            {/* Stability progress bar — visible in Rapid mode with auto-capture on */}
+            {scanMode === "rapid" && autoCaptureActive && (
+              <View style={styles.stabilityBarContainer}>
+                <Animated.View style={[
+                  styles.stabilityBarFill,
+                  { width: countdownAnim.interpolate({ inputRange: [0, 1], outputRange: [0, CARD_WIDTH] }) },
+                ]} />
+              </View>
+            )}
+            {scanMode === "rapid" && autoCaptureActive && (
+              <Text style={styles.stabilityLabel}>
+                {isWeb ? "Hold card steady to auto-capture..." : "Auto-capturing..."}
+              </Text>
+            )}
           </View>
         </View>
+
+        {/* OCR Debug Panel */}
+        {debugOcrVisible && (
+          <View style={styles.debugPanel}>
+            <View style={styles.debugHeader}>
+              <Text style={styles.debugTitle}>Latest OCR Read</Text>
+              <Pressable onPress={() => setLastOcrFull(null)}>
+                <Text style={styles.debugClose}>✕</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.debugText} numberOfLines={3}>
+              {lastOcrFull?.replace(/\n/g, " | ")}
+            </Text>
+            {debugImage && (
+              <View style={styles.debugImageContainer}>
+                <Text style={styles.debugImgLabel}>Croppead Input:</Text>
+                <Image source={{ uri: debugImage }} style={styles.debugImg} resizeMode="contain" />
+              </View>
+            )}
+            {lastOcrExtracted && (
+              <Text style={styles.debugExtraction}>
+                Match: <Text style={{color: ACCENT}}>{lastOcrExtracted.name || "???"}</Text> {lastOcrExtracted.collector ? `(#${lastOcrExtracted.collector})` : ""}
+              </Text>
+            )}
+          </View>
+        )}
 
         {/* Session Queue — Rapid Mode only */}
         {scanMode === "rapid" && (
@@ -759,9 +1495,9 @@ export default function ScannerScreen() {
                   ${queueTotalValue.toFixed(2)}
                 </Text>
                 <Text style={styles.queueCount}>
-                  {rapidQueue.length === 0
-                    ? "Queue empty — start scanning"
-                    : `${rapidQueue.length} card${rapidQueue.length !== 1 ? "s" : ""} queued`}
+                  {rapidQueue.length === 0 && needsReview.length === 0
+                    ? "Queue empty — scanning…"
+                    : `${rapidQueue.length} queued${needsReview.length > 0 ? `  ·  ${needsReview.length} need review` : ""}`}
                 </Text>
               </View>
               {rapidQueue.length > 0 && (
@@ -779,24 +1515,18 @@ export default function ScannerScreen() {
               <Text style={styles.queueToggleArrow}>{queueExpanded ? "▼" : "▲"}</Text>
             </Pressable>
 
-            {queueExpanded && rapidQueue.length > 0 && (
-              <ScrollView style={styles.queueList} showsVerticalScrollIndicator={false}>
-                {rapidQueue.map(card => (
-                  <View key={card.localId} style={styles.queueItem}>
-                    {card.thumbUri ? (
-                      <Image source={{ uri: card.thumbUri }} style={styles.queueThumb} />
-                    ) : (
-                      <View style={[styles.queueThumb, styles.queueThumbPlaceholder]}>
-                        <Text style={{ color: "#606078" }}>🃏</Text>
-                      </View>
-                    )}
-                    <Text style={styles.queueItemName} numberOfLines={1}>{card.name}</Text>
-                    <Text style={styles.queueItemPrice}>
-                      {card.priceUsd ? `$${card.priceUsd.toFixed(2)}` : "—"}
-                    </Text>
-                  </View>
-                ))}
-              </ScrollView>
+            {queueExpanded && (rapidQueue.length > 0 || needsReview.length > 0) && (
+              <FlatList<QueueListItem>
+                style={styles.queueList}
+                data={[
+                  ...rapidQueue.map(c => ({ type: "card"   as const, data: c })),
+                  ...needsReview.map(r => ({ type: "review" as const, data: r })),
+                ]}
+                keyExtractor={item => item.data.localId}
+                renderItem={({ item }) => <QueueItemRow item={item} onReview={openReviewItem} />}
+                showsVerticalScrollIndicator={false}
+                removeClippedSubviews
+              />
             )}
           </View>
         )}
@@ -804,15 +1534,29 @@ export default function ScannerScreen() {
         {/* Bottom Bar: Action Buttons */}
         <View style={styles.bottomBar}>
           <View style={styles.actionRow}>
-            <Pressable
-              style={[styles.captureBtn, autoScan && styles.captureBtnActive, !canScan && styles.btnDisabled]}
-              onPress={() => setAutoScan(!autoScan)}
-              disabled={!canScan}
-            >
-              <Text style={styles.captureBtnText}>
-                {autoScan ? "⏱ Auto-Scan: ON" : "⏱ Auto-Scan: OFF"}
-              </Text>
-            </Pressable>
+            {scanMode === "rapid" ? (
+              // Rapid mode: auto-capture toggle (motion/stability detection)
+              <Pressable
+                style={[styles.captureBtn, autoCaptureActive && styles.captureBtnActive, !canScan && styles.btnDisabled]}
+                onPress={() => setAutoCaptureActive(a => !a)}
+                disabled={!canScan}
+              >
+                <Text style={styles.captureBtnText}>
+                  {autoCaptureActive ? "⚡ Auto-Capture: ON" : "⚡ Auto-Capture: OFF"}
+                </Text>
+              </Pressable>
+            ) : (
+              // Single mode: original auto-scan toggle
+              <Pressable
+                style={[styles.captureBtn, autoScan && styles.captureBtnActive, !canScan && styles.btnDisabled]}
+                onPress={() => setAutoScan(!autoScan)}
+                disabled={!canScan}
+              >
+                <Text style={styles.captureBtnText}>
+                  {autoScan ? "⏱ Auto-Scan: ON" : "⏱ Auto-Scan: OFF"}
+                </Text>
+              </Pressable>
+            )}
 
             <Pressable
               style={[styles.manualBtn, !canScan && styles.btnDisabled]}
@@ -893,135 +1637,263 @@ export default function ScannerScreen() {
       </Modal>
 
       {/* ── Review Scan Modal (Rapid mode fallback) ── */}
-      <Modal
-        visible={reviewModalVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setReviewModalVisible(false)}
-      >
-        <View style={styles.resultModalBg}>
-          <View style={styles.resultSheet}>
-            <View style={styles.resultSheetHeader}>
-              <Text style={styles.resultSheetTitle}>Review Scan</Text>
-              <Pressable style={styles.resultSheetClose} onPress={() => setReviewModalVisible(false)}>
-                <Text style={styles.resultSheetCloseText}>✕</Text>
-              </Pressable>
-            </View>
-            <View style={styles.reviewSearchRow}>
-              <TextInput
-                style={styles.reviewInput}
-                value={reviewEditText}
-                onChangeText={setReviewEditText}
-                placeholder="Edit OCR text..."
-                placeholderTextColor="#606078"
-                autoCapitalize="words"
-                returnKeyType="search"
-                onSubmitEditing={() => handleReviewSearch(reviewEditText)}
-              />
-              <Pressable
-                style={[styles.reviewSearchBtn, reviewSearching && styles.btnDisabled]}
-                onPress={() => handleReviewSearch(reviewEditText)}
-                disabled={reviewSearching}
-              >
-                {reviewSearching
-                  ? <ActivityIndicator size="small" color="#0a0a0f" />
-                  : <Text style={styles.reviewSearchBtnText}>Search</Text>
-                }
-              </Pressable>
-            </View>
-            {reviewResults.length === 0 && !reviewSearching && (
-              <View style={styles.reviewEmptyState}>
-                <Text style={styles.reviewEmptyText}>
-                  No results. Edit the text above and search again.
-                </Text>
+      {reviewModalVisible && (
+        isWeb ? (
+          <View style={[styles.resultModalBgWeb, { zIndex: 1000 }]}>
+            <View style={styles.resultSheetWeb}>
+              <View style={styles.resultSheetHeader}>
+                <Text style={styles.resultSheetTitle}>Review Scan</Text>
+                <Pressable style={styles.resultSheetClose} onPress={() => setReviewModalVisible(false)}>
+                  <Text style={styles.resultSheetCloseText}>✕</Text>
+                </Pressable>
               </View>
-            )}
-            <ScrollView>
-              {reviewResults.map(card => {
-                const thumbUri = getSmallImageUri(card);
-                const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
-                return (
-                  <Pressable key={card.id} style={styles.resultCard} onPress={() => handleReviewSelect(card)}>
-                    {thumbUri ? (
-                      <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
-                    ) : (
-                      <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
-                        <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+              <View style={styles.reviewSearchRow}>
+                <TextInput
+                  style={styles.reviewInput}
+                  value={reviewEditText}
+                  onChangeText={setReviewEditText}
+                  placeholder="Edit OCR text..."
+                  placeholderTextColor="#606078"
+                  autoCapitalize="words"
+                  returnKeyType="search"
+                  onSubmitEditing={() => handleReviewSearch(reviewEditText)}
+                />
+                <Pressable
+                  style={[styles.reviewSearchBtn, reviewSearching && styles.btnDisabled]}
+                  onPress={() => handleReviewSearch(reviewEditText)}
+                  disabled={reviewSearching}
+                >
+                  {reviewSearching
+                    ? <ActivityIndicator size="small" color="#0a0a0f" />
+                    : <Text style={styles.reviewSearchBtnText}>Search</Text>
+                  }
+                </Pressable>
+              </View>
+              {reviewResults.length === 0 && !reviewSearching && (
+                <View style={styles.reviewEmptyState}>
+                  <Text style={styles.reviewEmptyText}>
+                    No results. Edit the text above and search again.
+                  </Text>
+                </View>
+              )}
+              <ScrollView>
+                {reviewResults.map(card => {
+                  const thumbUri = getSmallImageUri(card);
+                  const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
+                  return (
+                    <Pressable key={card.id} style={styles.resultCard} onPress={() => handleReviewSelect(card)}>
+                      {thumbUri ? (
+                        <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
+                      ) : (
+                        <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
+                          <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+                        </View>
+                      )}
+                      <View style={styles.resultInfo}>
+                        <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
+                        <Text style={styles.resultMeta} numberOfLines={1}>{card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}</Text>
+                        <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
                       </View>
-                    )}
-                    <View style={styles.resultInfo}>
-                      <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
-                      <Text style={styles.resultMeta} numberOfLines={1}>
-                        {card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}
-                      </Text>
-                      <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
-                    </View>
-                    {price && (
-                      <View style={styles.resultPriceChip}>
-                        <Text style={styles.resultPrice}>{price}</Text>
-                      </View>
-                    )}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <Pressable style={styles.resultCancelBtn} onPress={() => setReviewModalVisible(false)}>
-              <Text style={styles.resultCancelText}>Skip — Try scanning again</Text>
-            </Pressable>
+                      {price && (
+                        <View style={styles.resultPriceChip}>
+                          <Text style={styles.resultPrice}>{price}</Text>
+                        </View>
+                      )}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              <Pressable
+                style={styles.resultCancelBtn}
+                onPress={() => {
+                  if (reviewingItem) {
+                    setNeedsReview(prev => prev.filter(r => r.localId !== reviewingItem.localId));
+                    setReviewingItem(null);
+                  }
+                  setReviewModalVisible(false);
+                }}
+              >
+                <Text style={styles.resultCancelText}>
+                  {reviewingItem ? "Skip — Remove from Review Queue" : "Skip — Try scanning again"}
+                </Text>
+              </Pressable>
+            </View>
           </View>
-        </View>
-      </Modal>
+        ) : (
+          <Modal
+            visible={reviewModalVisible}
+            animationType="slide"
+            transparent
+            onRequestClose={() => setReviewModalVisible(false)}
+          >
+            <View style={styles.resultModalBg}>
+              <View style={styles.resultSheet}>
+                <View style={styles.resultSheetHeader}>
+                  <Text style={styles.resultSheetTitle}>Review Scan</Text>
+                  <Pressable style={styles.resultSheetClose} onPress={() => setReviewModalVisible(false)}>
+                    <Text style={styles.resultSheetCloseText}>✕</Text>
+                  </Pressable>
+                </View>
+                <View style={styles.reviewSearchRow}>
+                  <TextInput
+                    style={styles.reviewInput}
+                    value={reviewEditText}
+                    onChangeText={setReviewEditText}
+                    placeholder="Edit OCR text..."
+                    placeholderTextColor="#606078"
+                    autoCapitalize="words"
+                    returnKeyType="search"
+                    onSubmitEditing={() => handleReviewSearch(reviewEditText)}
+                  />
+                  <Pressable
+                    style={[styles.reviewSearchBtn, reviewSearching && styles.btnDisabled]}
+                    onPress={() => handleReviewSearch(reviewEditText)}
+                    disabled={reviewSearching}
+                  >
+                    {reviewSearching
+                      ? <ActivityIndicator size="small" color="#0a0a0f" />
+                      : <Text style={styles.reviewSearchBtnText}>Search</Text>
+                    }
+                  </Pressable>
+                </View>
+                {reviewResults.length === 0 && !reviewSearching && (
+                  <View style={styles.reviewEmptyState}>
+                    <Text style={styles.reviewEmptyText}>
+                      No results. Edit the text above and search again.
+                    </Text>
+                  </View>
+                )}
+                <ScrollView>
+                  {reviewResults.map(card => {
+                    const thumbUri = getSmallImageUri(card);
+                    const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
+                    return (
+                      <Pressable key={card.id} style={styles.resultCard} onPress={() => handleReviewSelect(card)}>
+                        {thumbUri ? (
+                          <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
+                        ) : (
+                          <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
+                            <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+                          </View>
+                        )}
+                        <View style={styles.resultInfo}>
+                          <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
+                          <Text style={styles.resultMeta} numberOfLines={1}>
+                            {card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}
+                          </Text>
+                          <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
+                        </View>
+                        {price && (
+                          <View style={styles.resultPriceChip}>
+                            <Text style={styles.resultPrice}>{price}</Text>
+                          </View>
+                        )}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+                <Pressable style={styles.resultCancelBtn} onPress={() => setReviewModalVisible(false)}>
+                  <Text style={styles.resultCancelText}>Skip — Try scanning again</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Modal>
+        )
+      )}
 
       {/* ── Single-Mode Result Picker Modal ── */}
-      <Modal
-        visible={resultModalVisible}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setResultModalVisible(false)}
-      >
-        <View style={styles.resultModalBg}>
-          <View style={styles.resultSheet}>
-            <View style={styles.resultSheetHeader}>
-              <Text style={styles.resultSheetTitle}>Which card is this?</Text>
-              <Pressable style={styles.resultSheetClose} onPress={() => setResultModalVisible(false)}>
-                <Text style={styles.resultSheetCloseText}>✕</Text>
+      {resultModalVisible && (
+        isWeb ? (
+          <View style={[styles.resultModalBgWeb, { zIndex: 1000 }]}>
+            <View style={styles.resultSheetWeb}>
+              <View style={styles.resultSheetHeader}>
+                <Text style={styles.resultSheetTitle}>Which card is this?</Text>
+                <Pressable style={styles.resultSheetClose} onPress={() => setResultModalVisible(false)}>
+                  <Text style={styles.resultSheetCloseText}>✕</Text>
+                </Pressable>
+              </View>
+              <ScrollView>{resultCandidates.map(card => {
+                  const thumbUri = getSmallImageUri(card);
+                  const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
+                  return (
+                    <Pressable key={card.id} style={styles.resultCard} onPress={() => handleResultSelect(card)}>
+                      {thumbUri ? (
+                        <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
+                      ) : (
+                        <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
+                          <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+                        </View>
+                      )}
+                      <View style={styles.resultInfo}>
+                        <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
+                        <Text style={styles.resultMeta} numberOfLines={1}>{card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}</Text>
+                        <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
+                      </View>
+                      {price && (
+                        <View style={styles.resultPriceChip}>
+                          <Text style={styles.resultPrice}>{price}</Text>
+                        </View>
+                      )}
+                    </Pressable>
+                  );
+                })}</ScrollView>
+              <Pressable style={styles.resultCancelBtn} onPress={() => setResultModalVisible(false)}>
+                <Text style={styles.resultCancelText}>None of these — Try again</Text>
               </Pressable>
             </View>
-            <ScrollView>
-              {resultCandidates.map(card => {
-                const thumbUri = getSmallImageUri(card);
-                const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
-                return (
-                  <Pressable key={card.id} style={styles.resultCard} onPress={() => handleResultSelect(card)}>
-                    {thumbUri ? (
-                      <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
-                    ) : (
-                      <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
-                        <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
-                      </View>
-                    )}
-                    <View style={styles.resultInfo}>
-                      <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
-                      <Text style={styles.resultMeta} numberOfLines={1}>
-                        {card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}
-                      </Text>
-                      <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
-                    </View>
-                    {price && (
-                      <View style={styles.resultPriceChip}>
-                        <Text style={styles.resultPrice}>{price}</Text>
-                      </View>
-                    )}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-            <Pressable style={styles.resultCancelBtn} onPress={() => setResultModalVisible(false)}>
-              <Text style={styles.resultCancelText}>None of these — Try again</Text>
-            </Pressable>
           </View>
-        </View>
-      </Modal>
+        ) : (
+          <Modal
+            visible={resultModalVisible}
+            animationType="slide"
+            transparent
+            onRequestClose={() => setResultModalVisible(false)}
+          >
+            <View style={styles.resultModalBg}>
+              <View style={styles.resultSheet}>
+                <View style={styles.resultSheetHeader}>
+                  <Text style={styles.resultSheetTitle}>Which card is this?</Text>
+                  <Pressable style={styles.resultSheetClose} onPress={() => setResultModalVisible(false)}>
+                    <Text style={styles.resultSheetCloseText}>✕</Text>
+                  </Pressable>
+                </View>
+                <ScrollView>
+                  {resultCandidates.map(card => {
+                    const thumbUri = getSmallImageUri(card);
+                    const price = card.prices.usd ? `$${parseFloat(card.prices.usd).toFixed(2)}` : null;
+                    return (
+                      <Pressable key={card.id} style={styles.resultCard} onPress={() => handleResultSelect(card)}>
+                        {thumbUri ? (
+                          <Image source={{ uri: thumbUri }} style={styles.resultThumb} />
+                        ) : (
+                          <View style={[styles.resultThumb, styles.resultThumbPlaceholder]}>
+                            <Text style={{ color: "#606078", fontSize: 20 }}>🃏</Text>
+                          </View>
+                        )}
+                        <View style={styles.resultInfo}>
+                          <Text style={styles.resultName} numberOfLines={1}>{card.name}</Text>
+                          <Text style={styles.resultMeta} numberOfLines={1}>
+                            {card.mana_cost ? `${card.mana_cost}  ·  ` : ""}{card.set.toUpperCase()} #{card.collector_number}
+                          </Text>
+                          <Text style={styles.resultTypeLine} numberOfLines={1}>{card.type_line}</Text>
+                        </View>
+                        {price && (
+                          <View style={styles.resultPriceChip}>
+                            <Text style={styles.resultPrice}>{price}</Text>
+                          </View>
+                        )}
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+                <Pressable style={styles.resultCancelBtn} onPress={() => setResultModalVisible(false)}>
+                  <Text style={styles.resultCancelText}>None of these — Try again</Text>
+                </Pressable>
+              </View>
+            </View>
+          </Modal>
+        )
+      )}
     </View>
   );
 }
@@ -1041,18 +1913,18 @@ const styles = StyleSheet.create({
   permButtonText: { color: "#0a0a0f", fontWeight: "800", fontSize: 16 },
 
   // Top bar
-  topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 16, paddingTop: 56, paddingBottom: 10, backgroundColor: "rgba(10,10,15,0.7)", zIndex: 10 },
-  topBarTitle: { color: "#f0f0f8", fontSize: 18, fontWeight: "800" },
+  topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 16, paddingTop: isWeb ? 10 : 56, paddingBottom: 10, backgroundColor: "rgba(10,10,15,0.85)", zIndex: 10 },
+  topBarTitle: { color: "#ffffff", fontSize: 18, fontWeight: "800", textShadowColor: "rgba(0,0,0,0.8)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 3 },
   topBarRight: { flexDirection: "row", alignItems: "center", gap: 8 },
   flashBtn: { backgroundColor: "rgba(200,155,60,0.2)", borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1, borderColor: ACCENT },
   flashText: { color: ACCENT, fontWeight: "700", fontSize: 12 },
 
   // Mode toggle
-  modeToggle: { flexDirection: "row", backgroundColor: "#12121a", borderRadius: 20, padding: 3, borderWidth: 1, borderColor: "#222233" },
-  modeBtn: { paddingHorizontal: 12, paddingVertical: 5, borderRadius: 17 },
+  modeToggle: { flexDirection: "row", backgroundColor: "rgba(10,10,20,0.9)", borderRadius: 22, padding: 4, borderWidth: 1, borderColor: "#333348" },
+  modeBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 18 },
   modeBtnActive: { backgroundColor: ACCENT },
   modeBtnRapid: { backgroundColor: RAPID },
-  modeBtnText: { color: "#a0a0b8", fontWeight: "700", fontSize: 12 },
+  modeBtnText: { color: "#c0c0d8", fontWeight: "700", fontSize: 14 },
   modeBtnTextActive: { color: "#0a0a0f" },
   modeBtnTextRapid: { color: "#fff" },
 
@@ -1066,11 +1938,10 @@ const styles = StyleSheet.create({
   // Camera overlay
   overlayContainer: { ...StyleSheet.absoluteFillObject, zIndex: 10 },
   overlayDim: { flex: 1, backgroundColor: "rgba(0,0,0,0.6)" },
-  overlayRow: { flexDirection: "row", height: CARD_HEIGHT },
-  cardFrame: { width: CARD_WIDTH, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 12, justifyContent: "space-between" },
-  targetBoxTop: { height: "15%", borderBottomWidth: 1, borderColor: "rgba(255,255,255,0.5)", borderStyle: "dashed", padding: 6 },
-  targetBoxBottom: { height: "12%", borderTopWidth: 1, borderColor: "rgba(255,255,255,0.5)", borderStyle: "dashed", padding: 6, justifyContent: "flex-end" },
-  targetLabel: { color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: "800", textTransform: "uppercase" },
+  overlayRow: { flexDirection: "row", height: TITLE_HEIGHT },
+  cardFrame: { width: CARD_WIDTH, borderWidth: 2, borderColor: "rgba(255,255,255,0.7)", borderRadius: 8, justifyContent: "center" },
+  targetBoxTop: { width: "100%", height: "100%", paddingHorizontal: 12, justifyContent: "center" },
+  targetLabel: { color: "rgba(255,255,255,0.8)", fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1 },
   frameHelper: { color: "#f0f0f8", fontSize: 13, fontWeight: "700", textAlign: "center", paddingHorizontal: 20 },
   frameHelperSub: { color: ACCENT, fontSize: 13, fontWeight: "800", textAlign: "center", marginTop: 4 },
 
@@ -1135,6 +2006,8 @@ const styles = StyleSheet.create({
   gateItemName: { color: "#f0f0f8", fontSize: 16, fontWeight: "700", marginBottom: 2 },
   gateItemMeta: { color: "#606078", fontSize: 12 },
   gateItemArrow: { color: ACCENT, fontSize: 18, fontWeight: "700", paddingLeft: 12 },
+  gateItemRecent: { backgroundColor: "rgba(200,155,60,0.06)", borderLeftWidth: 3, borderLeftColor: ACCENT },
+  gateSection: { color: "#606078", fontSize: 11, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1.2, paddingHorizontal: 20, paddingVertical: 10, backgroundColor: "#0d0d16" },
 
   // Active set chip (inside scanner, above session badge)
   setChip: { flexDirection: "row", alignSelf: "center", alignItems: "center", gap: 8, backgroundColor: "rgba(200,155,60,0.12)", borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 1, borderColor: ACCENT, zIndex: 10, maxWidth: "90%" },
@@ -1165,6 +2038,102 @@ const styles = StyleSheet.create({
   resultTypeLine: { color: "#606078", fontSize: 11 },
   resultPriceChip: { backgroundColor: "rgba(34,197,94,0.15)", borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: "#22c55e" },
   resultPrice: { color: "#22c55e", fontWeight: "700", fontSize: 13 },
-  resultCancelBtn: { margin: 16, paddingVertical: 14, alignItems: "center", borderTopWidth: 1, borderColor: "#222233" },
+  resultCancelBtn: { margin: 16, paddingVertical: 14, alignItems: "center" },
   resultCancelText: { color: "#606078", fontWeight: "600" },
+
+  // Debug Panel
+  debugPanel: { position: "absolute", top: 180, left: 20, right: 20, backgroundColor: "rgba(10,10,20,0.9)", borderRadius: 12, padding: 12, borderWidth: 1, borderColor: "#333344", zIndex: 60 },
+  debugHeader: { flexDirection: "row", justifyContent: "space-between", marginBottom: 6 },
+  debugTitle: { color: "#606078", fontSize: 10, fontWeight: "800", textTransform: "uppercase" },
+  debugClose: { color: "#606078", fontSize: 12, padding: 4 },
+  debugText: { color: "#f0f0f8", fontSize: 13, fontFamily: Platform.OS === "ios" ? "Courier" : "monospace" },
+  debugExtraction: { color: "#a0a0b8", fontSize: 11, marginTop: 4, fontWeight: "600" },
+
+  debugImageContainer: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderColor: "#333344" },
+  debugImgLabel: { color: "#606078", fontSize: 9, fontWeight: "800", marginBottom: 4, textTransform: "uppercase" },
+  debugImg: { width: "100%", height: 40, backgroundColor: "#000", borderRadius: 4 },
+
+  // ── Review-Needed queue items (Feature 2) ──────────────────────────────────
+  reviewNeededItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderColor: "rgba(245,158,11,0.25)",
+    gap: 10,
+    backgroundColor: "rgba(245,158,11,0.06)",
+  },
+  reviewNeededText: {
+    color: "#f0f0f8",
+    fontSize: 12,
+    fontWeight: "600",
+    fontStyle: "italic",
+  },
+  reviewNeededBadge: {
+    alignSelf: "flex-start",
+    marginTop: 3,
+    backgroundColor: "rgba(245,158,11,0.18)",
+    borderRadius: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: "#f59e0b",
+  },
+  reviewNeededBadgeText: {
+    color: "#f59e0b",
+    fontSize: 10,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+
+  // ── Auto-capture stability bar (Feature 3) ─────────────────────────────────
+  cardFrameActive: {
+    borderColor: "#22c55e",
+  },
+  stabilityBarContainer: {
+    width: CARD_WIDTH,
+    height: 4,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderRadius: 2,
+    marginTop: 10,
+    overflow: "hidden",
+  },
+  stabilityBarFill: {
+    height: 4,
+    backgroundColor: "#22c55e",
+    borderRadius: 2,
+  },
+  stabilityLabel: {
+    color: "#22c55e",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 6,
+    letterSpacing: 0.5,
+    textTransform: "uppercase",
+  },
+
+  // Web side panel overrides
+  resultModalBgWeb: { 
+    position: "absolute", 
+    top: 56, // below topBar
+    bottom: 0, 
+    left: 0, 
+    right: 0, 
+    backgroundColor: "transparent", 
+    alignItems: "flex-end",
+    pointerEvents: "box-none" 
+  },
+  resultSheetWeb: { 
+    width: 400, 
+    height: "100%", 
+    backgroundColor: "rgba(10,10,15,0.95)", 
+    borderLeftWidth: 1, 
+    borderColor: "#222233",
+    paddingTop: 60, // Don't impede top toolbar
+    shadowColor: "#000",
+    shadowOffset: { width: -5, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 15,
+  },
 });
