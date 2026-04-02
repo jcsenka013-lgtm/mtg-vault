@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Linking,
   Switch,
+  Platform,
 } from "react-native";
 import { useLocalSearchParams, router, Stack } from "expo-router";
 import { supabase } from "@/lib/supabase";
@@ -25,15 +26,31 @@ const RARITY_COLORS: Record<string, string> = {
 };
 const CONDITIONS = ["NM", "LP", "MP", "HP", "DMG"] as const;
 
+function showAlert(title: string, message: string, onConfirm: () => void) {
+  if (Platform.OS === "web") {
+    if (window.confirm(`${title}\n\n${message}`)) {
+      onConfirm();
+    }
+  } else {
+    Alert.alert(title, message, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: onConfirm },
+    ]);
+  }
+}
+
 export default function CardDetailScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const params = useLocalSearchParams<{ id: string }>();
+  const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const [card, setCard] = useState<DbCard | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => { loadCard(); }, [id]);
 
   const loadCard = async () => {
+    if (!id) return;
     try {
       const { data, error } = await supabase
         .from("cards")
@@ -43,7 +60,7 @@ export default function CardDetailScreen() {
       if (error) throw error;
       setCard(data);
     } catch (e) {
-      console.error(e);
+      console.error("Failed to load card:", e);
     } finally {
       setLoading(false);
     }
@@ -73,23 +90,38 @@ export default function CardDetailScreen() {
         );
       }
     } catch {
-      Alert.alert("Error", "Could not refresh price.");
+      if (Platform.OS === "web") {
+        window.alert("Could not refresh price.");
+      } else {
+        Alert.alert("Error", "Could not refresh price.");
+      }
     } finally {
       setRefreshing(false);
     }
   };
 
   const handleDelete = () => {
-    Alert.alert("Remove Card", `Remove ${card?.name} from this session?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: async () => {
-          if (card) { await deleteCard(card.id); router.back(); }
-        },
-      },
-    ]);
+    if (!card || deleting) return;
+    showAlert(
+      "Remove Card",
+      `Remove "${card.name}" from your collection?`,
+      async () => {
+        try {
+          setDeleting(true);
+          await deleteCard(card.id);
+          router.back();
+        } catch (e) {
+          console.error("Failed to remove card from collection", e);
+          if (Platform.OS === "web") {
+            window.alert("Could not remove card from collection.");
+          } else {
+            Alert.alert("Error", "Could not remove card from collection.");
+          }
+        } finally {
+          setDeleting(false);
+        }
+      }
+    );
   };
 
   if (loading) return <ActivityIndicator color="#c89b3c" style={{ flex: 1, backgroundColor: "#0a0a0f" }} />;
@@ -184,8 +216,15 @@ export default function CardDetailScreen() {
           </Pressable>
         )}
 
-        <Pressable style={styles.deleteBtn} onPress={handleDelete}>
-          <Text style={styles.deleteBtnText}>🗑 Remove from Collection</Text>
+        <Pressable
+          style={[styles.deleteBtn, deleting && styles.deleteBtnDisabled]}
+          onPress={handleDelete}
+          disabled={deleting}
+        >
+          {deleting
+            ? <ActivityIndicator color="#ef4444" size="small" />
+            : <Text style={styles.deleteBtnText}>🗑 Remove from Collection</Text>
+          }
         </Pressable>
       </ScrollView>
     </View>
@@ -227,5 +266,6 @@ const styles = StyleSheet.create({
   linkBtn: { width: "100%", backgroundColor: "#12121a", borderRadius: 14, padding: 16, alignItems: "center", borderWidth: 1, borderColor: "#222233", marginBottom: 12 },
   linkBtnText: { color: "#4a9eff", fontWeight: "700" },
   deleteBtn: { width: "100%", backgroundColor: "rgba(239,68,68,0.08)", borderRadius: 14, padding: 16, alignItems: "center", borderWidth: 1, borderColor: "rgba(239,68,68,0.3)" },
+  deleteBtnDisabled: { opacity: 0.6 },
   deleteBtnText: { color: "#ef4444", fontWeight: "700" },
 });

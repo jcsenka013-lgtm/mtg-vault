@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Image,
   Alert,
+  Platform,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useAppStore } from "@store/appStore";
@@ -42,6 +43,7 @@ export default function InventoryScreen() {
   } = useAppStore();
   const [cards, setCards] = useState<DbCard[]>([]);
   const [loading, setLoading] = useState(false);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
   const loadCards = useCallback(async () => {
     if (!activeSession) return;
@@ -70,22 +72,42 @@ export default function InventoryScreen() {
     return sum + price * c.quantity;
   }, 0);
 
-  const handleDelete = async (id: string, name: string) => {
-    Alert.alert("Remove Card", `Remove ${name} from your library?`, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Remove",
-        style: "destructive",
-        onPress: async () => {
-          try {
-            await deleteCard(id);
-            setCards((prev) => prev.filter((c) => c.id !== id));
-          } catch (e) {
-            Alert.alert("Error", "Could not delete card.");
-          }
-        },
-      },
-    ]);
+  const performDelete = async (id: string) => {
+    try {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+      await deleteCard(id);
+      setCards((prev) => prev.filter((c) => c.id !== id));
+    } catch (e) {
+      console.error("Failed to delete card from inventory", e);
+      if (Platform.OS === "web") {
+        window.alert("Could not delete card.");
+      } else {
+        Alert.alert("Error", "Could not delete card.");
+      }
+    } finally {
+      setDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
+
+  const handleDelete = (id: string, name: string) => {
+    if (Platform.OS === "web") {
+      if (window.confirm(`Remove "${name}" from your library?`)) {
+        performDelete(id);
+      }
+    } else {
+      Alert.alert("Remove Card", `Remove ${name} from your library?`, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Remove", style: "destructive", onPress: () => performDelete(id) },
+      ]);
+    }
   };
 
   const renderCard = ({ item }: { item: DbCard }) => {
@@ -120,8 +142,15 @@ export default function InventoryScreen() {
             {item.quantity > 1 && <Text style={styles.qty}>×{item.quantity}</Text>}
           </View>
         </Pressable>
-        <Pressable style={styles.deleteBtn} onPress={() => handleDelete(item.id, item.name)}>
-          <Text style={styles.deleteEmoji}>🗑️</Text>
+        <Pressable
+          style={[styles.deleteBtn, deletingIds.has(item.id) && styles.deleteBtnDisabled]}
+          onPress={() => handleDelete(item.id, item.name)}
+          disabled={deletingIds.has(item.id)}
+        >
+          {deletingIds.has(item.id)
+            ? <ActivityIndicator size="small" color="#ef4444" />
+            : <Text style={styles.deleteEmoji}>🗑️</Text>
+          }
         </Pressable>
       </View>
     );
@@ -252,7 +281,8 @@ const styles = StyleSheet.create({
   cardRowWrapper: { flexDirection: "row", alignItems: "center" },
   cardRow: { flex: 1, flexDirection: "row", alignItems: "center", padding: 12, paddingLeft: 16 },
   deleteBtn: { padding: 16, paddingRight: 20 },
-  deleteEmoji: { fontSize: 18, opacity: 0.5 },
+  deleteBtnDisabled: { opacity: 0.5 },
+  deleteEmoji: { fontSize: 18 },
   thumb: { width: 44, height: 60, borderRadius: 4, marginRight: 12 },
   thumbPlaceholder: { backgroundColor: "#1a1a26", alignItems: "center", justifyContent: "center" },
   thumbEmoji: { fontSize: 20 },

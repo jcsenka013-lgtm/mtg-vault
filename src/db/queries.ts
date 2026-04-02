@@ -200,7 +200,7 @@ export async function getCardsForSession(
   };
   const rawField = opts?.sortField ?? "added_at";
   const field = sortMap[rawField] || rawField;
-  
+
   const ascending = (opts?.sortOrder ?? "desc") === "asc";
   query = query.order(field, { ascending });
 
@@ -241,8 +241,15 @@ export async function updateCardPrices(
 }
 
 export async function deleteCard(id: string): Promise<void> {
-  const { error } = await supabase.from("cards").delete().eq("id", id);
+  const { data, error } = await supabase
+    .from("cards")
+    .delete()
+    .eq("id", id)
+    .select();
   if (error) throw error;
+  if (!data || data.length === 0) {
+    throw new Error("Card not found or permission denied");
+  }
 }
 
 // ─── ROI Calculation ─────────────────────────────────────────────────────────
