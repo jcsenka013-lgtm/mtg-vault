@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import {
   View, Text, ScrollView, Pressable,
-  TextInput, ActivityIndicator, StyleSheet, Alert,
+  TextInput, ActivityIndicator, StyleSheet, Alert, ImageBackground, Image,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useAppStore } from "@store/appStore";
@@ -18,7 +18,7 @@ const MANA: { emoji: string; theme: ManaTheme }[] = [
   { emoji: "💀", theme: "B" },
   { emoji: "🔥", theme: "R" },
   { emoji: "🌿", theme: "G" },
-  { emoji: "◇",  theme: "C" },
+  { emoji: "◇", theme: "C" },
 ];
 
 const RARITY_COLORS: Record<string, string> = {
@@ -63,15 +63,15 @@ export default function DashboardScreen() {
       typeof window !== "undefined"
         ? window.confirm(`Delete "${name}"? This will remove all cards in this opening.`)
         : await new Promise<boolean>(resolve =>
-            Alert.alert(
-              "Delete Opening",
-              `Delete "${name}"? This will remove all cards in this opening.`,
-              [
-                { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-                { text: "Delete", style: "destructive", onPress: () => resolve(true) },
-              ]
-            )
-          );
+          Alert.alert(
+            "Delete Opening",
+            `Delete "${name}"? This will remove all cards in this opening.`,
+            [
+              { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+              { text: "Delete", style: "destructive", onPress: () => resolve(true) },
+            ]
+          )
+        );
     if (!confirmed) return;
     await deleteSession(id);
     if (activeSession?.id === id) setActiveSession(null);
@@ -94,6 +94,19 @@ export default function DashboardScreen() {
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: t.background }]} contentContainerStyle={styles.content}>
+
+      {/* Hero Banner */}
+      <ImageBackground
+        source={require("../../assets/bg-mana-symbols.jpg")}
+        style={styles.heroBanner}
+        resizeMode="cover"
+        imageStyle={{ borderRadius: 16 }}
+      >
+        <View style={styles.heroOverlay}>
+          <Text style={styles.heroTitle}>⚔️ The Vault</Text>
+          <Text style={styles.heroSubtitle}>Your MTG Collection Hub</Text>
+        </View>
+      </ImageBackground>
 
       {/* Top Banner with Logout */}
       <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
@@ -136,7 +149,12 @@ export default function DashboardScreen() {
       </View>
 
       {sessions.length === 0 ? (
-        <View style={styles.emptyCard}>
+        <ImageBackground
+          source={require("../../assets/bg-dark-city.jpg")}
+          style={styles.emptyCard}
+          resizeMode="cover"
+          imageStyle={{ borderRadius: 16, opacity: 0.45 }}
+        >
           <Text style={styles.emptyEmoji}>🐉</Text>
           <Text style={styles.emptyTitle}>Your vault awaits, Planeswalker</Text>
           <Text style={styles.emptySubtitle}>
@@ -145,7 +163,7 @@ export default function DashboardScreen() {
           <Pressable style={styles.ctaButton} onPress={() => router.push("/session/new")}>
             <Text style={styles.ctaText}>Begin Your Journey</Text>
           </Pressable>
-        </View>
+        </ImageBackground>
       ) : (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.sessionScroll}>
           {sessions.map((s) => (
@@ -291,6 +309,12 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0a0a0f" },
   content: { padding: 16, paddingBottom: 40 },
+
+  // Hero Banner
+  heroBanner: { height: 160, borderRadius: 16, marginBottom: 20, overflow: "hidden" },
+  heroOverlay: { flex: 1, backgroundColor: "rgba(10,10,15,0.55)", borderRadius: 16, alignItems: "center", justifyContent: "center" },
+  heroTitle: { color: "#f0f0f8", fontSize: 28, fontWeight: "900", letterSpacing: 2, textShadowColor: "rgba(0,0,0,0.9)", textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 8 },
+  heroSubtitle: { color: "#c89b3c", fontSize: 13, fontWeight: "700", letterSpacing: 1, marginTop: 6, textShadowColor: "rgba(0,0,0,0.9)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
 
   // Mana Banner
   manaBanner: {

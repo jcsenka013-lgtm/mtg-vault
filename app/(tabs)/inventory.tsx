@@ -8,6 +8,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Image,
+  ImageBackground,
   Alert,
   Platform,
 } from "react-native";
@@ -233,23 +234,33 @@ export default function InventoryScreen() {
 
       {/* List */}
       {!activeSession ? (
-        <View style={styles.center}>
+        <ImageBackground
+          source={require("../../assets/bg-lava-tree.jpg")}
+          style={styles.center}
+          resizeMode="cover"
+          imageStyle={{ opacity: 0.35 }}
+        >
           <Text style={styles.emptyEmoji}>🏰</Text>
           <Text style={styles.emptyText}>No active opening</Text>
           <Pressable style={styles.ctaBtn} onPress={() => router.push("/session/new")}>
             <Text style={styles.ctaBtnText}>Begin an Opening</Text>
           </Pressable>
-        </View>
+        </ImageBackground>
       ) : loading ? (
         <ActivityIndicator color="#c89b3c" style={{ marginTop: 40 }} />
       ) : cards.length === 0 ? (
-        <View style={styles.center}>
+        <ImageBackground
+          source={require("../../assets/bg-dark-city.jpg")}
+          style={styles.center}
+          resizeMode="cover"
+          imageStyle={{ opacity: 0.35 }}
+        >
           <Text style={styles.emptyEmoji}>🔮</Text>
           <Text style={styles.emptyText}>No cards cataloged yet</Text>
           <Pressable style={styles.ctaBtn} onPress={() => router.replace("/(tabs)/scanner")}>
             <Text style={styles.ctaBtnText}>Start Scrying</Text>
           </Pressable>
-        </View>
+        </ImageBackground>
       ) : (
         <FlatList
           data={cards}

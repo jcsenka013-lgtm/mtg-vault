@@ -6,10 +6,10 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  ImageBackground,
 } from "react-native";
 import { supabase } from "@/lib/supabase";
 import { router } from "expo-router";
@@ -34,125 +34,134 @@ export default function LoginScreen() {
   async function handleAuth() {
     setErrorMessage("");
     try {
-      console.log("DEBUG: handleAuth started for", selectedUser?.email);
       if (!selectedUser || !password) {
         setErrorMessage("Please provide the password for this account.");
         return;
       }
-
       setLoading(true);
-      console.log("DEBUG: Calling signInWithPassword...");
-      // Always sign in, sign up is removed for security
       const { data, error } = await supabase.auth.signInWithPassword({
         email: selectedUser.email,
         password,
       });
-
-      console.log("DEBUG: Supabase response:", { hasData: !!data, hasError: !!error, errorMessage: error?.message });
-
       if (error) {
         if (error.message.includes("Invalid login credentials")) {
           throw new Error("Incorrect password. Please try again.");
         }
         if (error.message.includes("Email not confirmed")) {
-          throw new Error("Your account is waiting to be confirmed in the Supabase Dashboard. JC needs to click 'Confirm' on your user.");
+          throw new Error("Your account is waiting to be confirmed. JC needs to click 'Confirm' on your user.");
         }
         throw error;
       }
-
-      console.log("DEBUG: Login successful, navigating...");
       router.replace("/(tabs)");
     } catch (error: any) {
-      console.error("DEBUG: Login catch block error:", error);
       setErrorMessage(error?.message || "An unexpected error occurred during login.");
     } finally {
       setLoading(false);
-      console.log("DEBUG: handleAuth finished");
     }
   }
 
   if (!selectedUser) {
     return (
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.logoEmoji}>🛡️</Text>
-          <Text style={styles.title}>The Vault</Text>
-          <Text style={styles.subtitle}>Select your identity</Text>
-        </View>
+      <ImageBackground
+        source={require("../../assets/bg-planeswalkers.jpg")}
+        style={styles.bgImage}
+        resizeMode="cover"
+      >
+        <View style={styles.overlay} />
+        <View style={styles.container}>
+          <View style={styles.header}>
+            <Text style={styles.logoEmoji}>🛡️</Text>
+            <Text style={styles.title}>The Vault</Text>
+            <Text style={styles.subtitle}>Select your identity, Planeswalker</Text>
+          </View>
 
-        <ScrollView contentContainerStyle={styles.grid}>
-          {ALLOWED_USERS.map((user) => (
-            <TouchableOpacity
-              key={user.name}
-              style={styles.userCard}
-              onPress={() => setSelectedUser(user)}
-            >
-              <Text style={styles.userCardText}>{user.name}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
+          <ScrollView contentContainerStyle={styles.grid}>
+            {ALLOWED_USERS.map((user) => (
+              <TouchableOpacity
+                key={user.name}
+                style={styles.userCard}
+                onPress={() => setSelectedUser(user)}
+              >
+                <Text style={styles.userCardText}>{user.name}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      </ImageBackground>
     );
   }
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-      style={styles.container}
+    <ImageBackground
+      source={require("../../assets/bg-planeswalkers.jpg")}
+      style={styles.bgImage}
+      resizeMode="cover"
     >
-      <View style={styles.content}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => setSelectedUser(null)}>
-          <Text style={styles.backBtnText}>← Back</Text>
-        </TouchableOpacity>
+      <View style={styles.overlay} />
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={styles.container}
+      >
+        <View style={styles.content}>
+          <TouchableOpacity style={styles.backBtn} onPress={() => setSelectedUser(null)}>
+            <Text style={styles.backBtnText}>← Back</Text>
+          </TouchableOpacity>
 
-        <View style={styles.header}>
-          <Text style={styles.logoEmoji}>🛡️</Text>
-          <Text style={styles.title}>Welcome, {selectedUser.name}</Text>
-          <Text style={styles.subtitle}>Enter your password to unlock the Vault</Text>
-        </View>
-
-        <View style={styles.form}>
-          <View style={styles.inputContainer}>
-            <Text style={styles.label}>Password</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="••••••••"
-              placeholderTextColor="#606078"
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              autoFocus
-              onSubmitEditing={handleAuth}
-            />
+          <View style={styles.header}>
+            <Text style={styles.logoEmoji}>🛡️</Text>
+            <Text style={styles.title}>Welcome, {selectedUser.name}</Text>
+            <Text style={styles.subtitle}>Enter your password to unlock the Vault</Text>
           </View>
 
-          {errorMessage ? (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText}>{errorMessage}</Text>
+          <View style={styles.form}>
+            <View style={styles.inputContainer}>
+              <Text style={styles.label}>Password</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="••••••••"
+                placeholderTextColor="#606078"
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry
+                autoFocus
+                onSubmitEditing={handleAuth}
+              />
             </View>
-          ) : null}
 
-          <TouchableOpacity
-            style={styles.authButton}
-            onPress={handleAuth}
-            disabled={loading}
-          >
-            {loading ? (
-              <ActivityIndicator color="#0a0a0f" />
-            ) : (
-              <Text style={styles.authButtonText}>Enter The Vault</Text>
-            )}
-          </TouchableOpacity>
+            {errorMessage ? (
+              <View style={styles.errorBox}>
+                <Text style={styles.errorText}>{errorMessage}</Text>
+              </View>
+            ) : null}
+
+            <TouchableOpacity
+              style={styles.authButton}
+              onPress={handleAuth}
+              disabled={loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#0a0a0f" />
+              ) : (
+                <Text style={styles.authButtonText}>Enter The Vault</Text>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
+  bgImage: {
+    flex: 1,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(10, 10, 15, 0.72)",
+  },
   container: {
     flex: 1,
-    backgroundColor: "#0a0a0f",
     paddingTop: 60,
   },
   content: {
@@ -174,12 +183,19 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     letterSpacing: 1,
     textTransform: "uppercase",
+    textShadowColor: "rgba(0,0,0,0.8)",
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
   },
   subtitle: {
-    color: "#a0a0b8",
+    color: "#c89b3c",
     fontSize: 14,
     marginTop: 8,
     textAlign: "center",
+    fontWeight: "600",
+    textShadowColor: "rgba(0,0,0,0.8)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
   },
   errorBox: {
     backgroundColor: "rgba(239, 68, 68, 0.15)",
@@ -200,11 +216,11 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   userCard: {
-    backgroundColor: "#12121a",
+    backgroundColor: "rgba(18, 18, 26, 0.85)",
     borderRadius: 12,
     padding: 20,
     borderWidth: 1,
-    borderColor: "#222233",
+    borderColor: "rgba(200, 155, 60, 0.4)",
     alignItems: "center",
   },
   userCardText: {
@@ -238,7 +254,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
   },
   input: {
-    backgroundColor: "#12121a",
+    backgroundColor: "rgba(18, 18, 26, 0.9)",
     borderRadius: 12,
     padding: 16,
     color: "#f0f0f8",
@@ -254,8 +270,8 @@ const styles = StyleSheet.create({
     marginTop: 10,
     shadowColor: "#c89b3c",
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
     elevation: 5,
   },
   authButtonText: {
