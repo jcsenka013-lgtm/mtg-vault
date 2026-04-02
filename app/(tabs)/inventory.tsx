@@ -235,7 +235,7 @@ export default function InventoryScreen() {
       {/* List */}
       {!activeSession ? (
         <ImageBackground
-          source={require("../../assets/bg-lava-tree.jpg")}
+          source={require("../../assets/bg-lava-tree.jpeg")}
           style={styles.center}
           resizeMode="cover"
           imageStyle={{ opacity: 0.35 }}
