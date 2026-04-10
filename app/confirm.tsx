@@ -4,10 +4,12 @@ import {
   ActivityIndicator, StyleSheet, Alert, Switch,
   TextInput,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
 import { useAppStore } from "@store/appStore";
 import { normalizeScryfallCard, searchCardByName, autocompleteCardName, getCardPrints } from "@api/scryfall";
 import { addCard } from "@db/queries";
+import { determineDestination } from "../src/utils/triage";
 import * as Haptics from "expo-haptics";
 import type { ScryfallCard } from "@mtgtypes/index";
 import "react-native-get-random-values";
@@ -19,6 +21,7 @@ const RARITY_COLORS: Record<string, string> = {
 const CONDITIONS = ["NM", "LP", "MP", "HP", "DMG"] as const;
 
 export default function ConfirmScreen() {
+  const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ candidates?: string; sessionId: string }>();
   const { activeSession } = useAppStore();
   const sessionId = params.sessionId || activeSession?.id || "";
@@ -30,6 +33,7 @@ export default function ConfirmScreen() {
   const [condition, setCondition] = useState<"NM" | "LP" | "MP" | "HP" | "DMG">("NM");
   const [saving, setSaving] = useState(false);
   const [quantity, setQuantity] = useState(1);
+  const [destinationOverride, setDestinationOverride] = useState<"LGS" | "BULK" | null>(null);
 
   // Manual search state
   const [searchQuery, setSearchQuery] = useState("");
@@ -91,6 +95,7 @@ export default function ConfirmScreen() {
   const price = normalized
     ? (isFoil ? (normalized.priceUsdFoil ?? normalized.priceUsd) : normalized.priceUsd)
     : null;
+  const activeDestination = destinationOverride ?? (normalized ? determineDestination(normalized.priceUsd, normalized.priceUsdFoil, isFoil) : "BULK");
 
   // Sync the `isFullArt` state with the currently selected card
   useEffect(() => {
@@ -143,6 +148,7 @@ export default function ConfirmScreen() {
         setName: normalized.setName + (isFullArt ? " (Full Art)" : ""),
         imageUri: normalized.imageUri,
         scryfallUri: normalized.scryfallUri,
+        destination: activeDestination,
       });
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       // Use replace to avoid stacking confirmation screens; takes user back to scanner
@@ -278,6 +284,23 @@ export default function ConfirmScreen() {
             </View>
 
             <View style={styles.conditionSection}>
+              <Text style={styles.sectionLabel}>Destination Route</Text>
+              <View style={styles.conditionRow}>
+                {["LGS", "BULK"].map((d) => (
+                  <Pressable
+                    key={d}
+                    style={[styles.condBtn, activeDestination === d && (d === "LGS" ? styles.destLgsActive : styles.destBulkActive)]}
+                    onPress={() => setDestinationOverride(d as "LGS" | "BULK")}
+                  >
+                    <Text style={[styles.condBtnText, activeDestination === d && (d === "LGS" ? styles.textLgs : styles.textBulk)]}>
+                      {d === "LGS" ? "LGS Credit" : "Bulk Storage"}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.conditionSection}>
               <Text style={styles.sectionLabel}>Condition</Text>
               <View style={styles.conditionRow}>
                 {CONDITIONS.map((c) => (
@@ -315,7 +338,7 @@ export default function ConfirmScreen() {
         )}
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View style={[styles.footer, { paddingBottom: insets.bottom + 16 }]}>
         <Pressable style={styles.cancelBtn} onPress={() => router.back()} disabled={saving}>
           <Text style={styles.cancelBtnText}>← Back</Text>
         </Pressable>
@@ -327,8 +350,8 @@ export default function ConfirmScreen() {
           {saving
             ? <ActivityIndicator color="#0a0a0f" size="small" />
             : <Text style={styles.confirmBtnText}>
-                {quantity > 1 ? `✓ Add ${quantity}x to Collection` : "✓ Add to Collection"}
-              </Text>
+              {quantity > 1 ? `✓ Add ${quantity}x to Collection` : "✓ Add to Collection"}
+            </Text>
           }
         </Pressable>
       </View>
@@ -371,6 +394,10 @@ const styles = StyleSheet.create({
   condBtnActive: { backgroundColor: "#1e1a0f", borderColor: "#c89b3c" },
   condBtnText: { color: "#a0a0b8", fontWeight: "700", fontSize: 13 },
   condBtnTextActive: { color: "#c89b3c" },
+  destLgsActive: { backgroundColor: "rgba(34, 197, 94, 0.15)", borderColor: "#22c55e" },
+  destBulkActive: { backgroundColor: "rgba(160, 160, 184, 0.15)", borderColor: "#a0a0b8" },
+  textLgs: { color: "#22c55e", fontWeight: "800" },
+  textBulk: { color: "#a0a0b8", fontWeight: "800" },
   quantityRow: { flexDirection: "row", alignItems: "center", gap: 16 },
   qtyBtn: { backgroundColor: "#222233", borderRadius: 10, width: 36, height: 36, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "#333348" },
   qtyBtnDisabled: { opacity: 0.35 },

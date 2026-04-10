@@ -17,6 +17,7 @@ import { supabase } from "@/lib/supabase";
 import type { DbCard } from "@/lib/supabase";
 import { deleteCard, updateCardFoil, updateCardCondition, updateCardPrices } from "@db/queries";
 import { refreshCardPrice } from "@api/scryfall";
+import { calculateLgsCredit } from "../../src/utils/triage";
 
 const RARITY_COLORS: Record<string, string> = {
   mythic: "#e87a3c",
@@ -148,6 +149,13 @@ export default function CardDetailScreen() {
 
         <Text style={styles.cardName}>{card.name}</Text>
         <View style={styles.metaRow}>
+          {card.destination && (
+            <View style={[styles.destinationBadge, card.destination === "LGS" ? styles.bgLgs : styles.bgBulk]}>
+              <Text style={[styles.destinationText, card.destination === "LGS" ? styles.textLgs : styles.textBulk]}>
+                {card.destination}
+              </Text>
+            </View>
+          )}
           <Text style={[styles.rarityTag, { color: RARITY_COLORS[card.rarity] }]}>
             {card.rarity.charAt(0).toUpperCase() + card.rarity.slice(1)}
           </Text>
@@ -178,6 +186,11 @@ export default function CardDetailScreen() {
             <Text style={styles.selectedPriceValue}>
               {price ? `$${Number(price).toFixed(2)}` : "—"}
             </Text>
+            {card.destination === "LGS" && (
+              <Text style={styles.lgsCreditText}>
+                LGS Credit Equivalent: ${calculateLgsCredit(card.price_usd, card.price_usd_foil, card.is_foil, card.quantity).toFixed(2)}
+              </Text>
+            )}
           </View>
           <Pressable style={styles.refreshBtn} onPress={handleRefreshPrice} disabled={refreshing}>
             {refreshing
@@ -268,4 +281,11 @@ const styles = StyleSheet.create({
   deleteBtn: { width: "100%", backgroundColor: "rgba(239,68,68,0.08)", borderRadius: 14, padding: 16, alignItems: "center", borderWidth: 1, borderColor: "rgba(239,68,68,0.3)" },
   deleteBtnDisabled: { opacity: 0.6 },
   deleteBtnText: { color: "#ef4444", fontWeight: "700" },
+  destinationBadge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginRight: 4 },
+  bgLgs: { backgroundColor: "rgba(34, 197, 94, 0.15)" },
+  bgBulk: { backgroundColor: "rgba(160, 160, 184, 0.15)" },
+  destinationText: { fontSize: 11, fontWeight: "800", letterSpacing: 0.5 },
+  textLgs: { color: "#22c55e" },
+  textBulk: { color: "#a0a0b8" },
+  lgsCreditText: { color: "#22c55e", fontSize: 13, fontWeight: "700", marginTop: 4 },
 });

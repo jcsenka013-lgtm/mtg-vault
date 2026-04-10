@@ -105,6 +105,7 @@ export async function addCard(data: {
   priceUsdFoil: number | null;
   imageUri: string | null;
   scryfallUri: string | null;
+  destination?: "LGS" | "BULK";
 }): Promise<DbCard> {
   const { data: result, error } = await supabase
     .from("cards")
@@ -125,6 +126,7 @@ export async function addCard(data: {
       price_fetched_at: new Date().toISOString(),
       image_uri: data.imageUri,
       scryfall_uri: data.scryfallUri,
+      destination: data.destination,
     })
     .select()
     .single();
@@ -148,6 +150,7 @@ export async function bulkAddCards(cards: Array<{
   priceUsdFoil: number | null;
   imageUri: string | null;
   scryfallUri: string | null;
+  destination?: "LGS" | "BULK";
 }>): Promise<void> {
   if (cards.length === 0) return;
   const rows = cards.map((data) => ({
@@ -167,6 +170,7 @@ export async function bulkAddCards(cards: Array<{
     price_fetched_at: new Date().toISOString(),
     image_uri: data.imageUri,
     scryfall_uri: data.scryfallUri,
+    destination: data.destination,
   }));
   const { error } = await supabase.from("cards").insert(rows);
   if (error) throw error;
@@ -252,6 +256,96 @@ export async function deleteCard(id: string): Promise<void> {
   }
 }
 
+// ─── Wishlist ────────────────────────────────────────────────────────────────
+
+export async function getWishlistItems(): Promise<any[]> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Authenticated user required");
+
+  const { data, error } = await supabase
+    .from("wishlist")
+    .select("*")
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function addWishlistItem(data: {
+  cardId?: string;
+  scryfallId: string;
+  name: string;
+  setCode?: string;
+  setName?: string;
+  collectorNumber?: string;
+  rarity?: string;
+  priceTarget?: number;
+  isFoil?: boolean;
+  condition?: string;
+}): Promise<any> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Authenticated user required");
+
+  const { data: result, error } = await supabase
+    .from("wishlist")
+    .insert({
+      user_id: user.id,
+      card_id: data.cardId ?? null,
+      scryfall_id: data.scryfallId,
+      name: data.name,
+      set_code: data.setCode ?? null,
+      set_name: data.setName ?? null,
+      collector_number: data.collectorNumber ?? null,
+      rarity: data.rarity ?? null,
+      price_target: data.priceTarget ?? null,
+      is_foil: data.isFoil ?? false,
+      condition: data.condition ?? "NM",
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return result;
+}
+
+export async function removeWishlistItem(id: string): Promise<void> {
+  const { data, error } = await supabase
+    .from("wishlist")
+    .delete()
+    .eq("id", id);
+  if (error) throw error;
+  if (!data || data.length === 0) {
+    throw new Error("Wishlist item not found or permission denied");
+  }
+}
+
+export async function updateWishlistItem(id: string, updates: {
+  priceTarget?: number;
+  isFoil?: boolean;
+  condition?: string;
+}): Promise<void> {
+  const { error } = await supabase
+    .from("wishlist")
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function getWishlistItem(id: string): Promise<any> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Authenticated user required");
+
+  const { data, error } = await supabase
+    .from("wishlist")
+    .select("*")
+    .eq("id", id)
+    .single();
+  if (error) throw error;
+  return data ?? undefined;
+}
+
 // ─── ROI Calculation ─────────────────────────────────────────────────────────
 
 export async function calculateSessionROI(sessionId: string): Promise<SessionROI> {
@@ -328,5 +422,6 @@ export function dbCardToScanned(card: DbCard): ScannedCard {
     imageUri: card.image_uri,
     scryfallUri: card.scryfall_uri,
     addedAt: new Date(card.added_at).getTime(),
+    destination: card.destination ?? null,
   };
 }

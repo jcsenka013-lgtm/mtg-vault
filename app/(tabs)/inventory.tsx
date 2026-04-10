@@ -56,6 +56,8 @@ export default function InventoryScreen() {
   const [cards, setCards] = useState<DbCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
+  const [isListingLoading, setIsListingLoading] = useState(false);
+  const [listingError, setListingError] = useState<string | null>(null);
 
   const loadCards = useCallback(async () => {
     if (!activeSession) return;
@@ -111,7 +113,7 @@ export default function InventoryScreen() {
 
   const handleDelete = (id: string, name: string) => {
     if (Platform.OS === "web") {
-      if (window.confirm(`Remove "${name}" from your library?`)) {
+      if (typeof window !== "undefined" && window.confirm(`Remove "${name}" from your library?`)) {
         performDelete(id);
       }
     } else {
@@ -167,6 +169,55 @@ export default function InventoryScreen() {
         </Pressable>
       </View>
     );
+  };
+
+  const handleListToEbay = async () => {
+    if (!activeSession) return;
+    setIsListingLoading(true);
+    setListingError(null);
+    try {
+      // Prepare bundle payload - all cards in current session
+      const bundlePayload = cards.map(c => ({
+        id: c.id,
+        name: c.name,
+        set_code: c.set_code,
+        quantity: c.quantity,
+        price_usd: c.price_usd,
+        is_foil: c.is_foil,
+        image_uri: c.image_uri,
+      }));
+
+      const { data, error } = await supabase.functions.invoke("ebay-auto-list", {
+        body: { cards: bundlePayload, sessionId: activeSession.id },
+      });
+
+      if (error) throw error;
+
+      Alert.alert("Success", "Bundle listed to eBay successfully!");
+    } catch (error) {
+      console.error("Ebay listing failed:", error);
+      // Parse eBay error message from nested JSON with proper type guards
+      let errorMessage = "Failed to list bundle to eBay.";
+
+      if (typeof error === "object" && error !== null) {
+        // Check for nested errors (common in eBay API)
+        if ("data" in error) {
+          const data = (error as any).data;
+          if (data && data.errors) {
+            if (Array.isArray(data.errors)) {
+              errorMessage = data.errors[0]?.message || errorMessage;
+            } else if (data.errors && "message" in data.errors) {
+              errorMessage = data.errors.message;
+            }
+          }
+        } else if ("message" in error) {
+          errorMessage = (error as Error).message;
+        }
+      }
+      setListingError(errorMessage);
+    } finally {
+      setIsListingLoading(false);
+    }
   };
 
   return (
@@ -278,6 +329,25 @@ export default function InventoryScreen() {
         <Text style={styles.statValue}>${totalValue.toFixed(2)} worth</Text>
       </View>
 
+      {/* eBay Listing Section */}
+      <View style={styles.listingSection}>
+        <Pressable
+          style={[styles.listingButton, isListingLoading && styles.listingButtonDisabled]}
+          onPress={handleListToEbay}
+          disabled={isListingLoading}
+        >
+          <Text style={styles.listingButtonText}>📦 List Bundle to eBay</Text>
+          {isListingLoading ? (
+            <ActivityIndicator color="#f0f0f8" style={{ marginLeft: 8 }} />
+          ) : null}
+        </Pressable>
+        {listingError && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>{listingError}</Text>
+          </View>
+        )}
+      </View>
+
       {/* List */}
       {!activeSession ? (
         <ImageBackground
@@ -372,4 +442,41 @@ const styles = StyleSheet.create({
   searchRow: { flexDirection: "row", alignItems: "center", marginHorizontal: 12, marginTop: 12, marginBottom: 0, gap: 8 },
   manualBtn: { backgroundColor: "#1a1a26", borderRadius: 12, borderWidth: 1, borderColor: "#c89b3c", paddingHorizontal: 14, paddingVertical: 13 },
   manualBtnText: { fontSize: 18 },
+  listingSection: {
+    marginBottom: 20,
+    alignItems: "center",
+  },
+  listingButton: {
+    backgroundColor: "#c89b3c",
+    borderRadius: 12,
+    padding: 16,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#c89b3c",
+  },
+  listingButtonDisabled: {
+    backgroundColor: "#8a7a6c",
+    borderColor: "#8a7a6c",
+  },
+  listingButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0a0a0f",
+  },
+  errorBox: {
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.2)",
+    alignItems: "center",
+    width: "100%",
+  },
+  errorText: {
+    color: "#ef4444",
+    fontSize: 14,
+    fontWeight: "600",
+    textAlign: "center",
+  },
 });

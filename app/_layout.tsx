@@ -3,6 +3,7 @@ import { Stack, router, useSegments } from "expo-router";
 import { useEffect } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { useAuthStore } from "@store/authStore";
 import { TouchableOpacity, Text } from "react-native";
 
@@ -35,6 +36,7 @@ export default function RootLayout() {
   }, [session, segments, isLoading]);
 
   return (
+    <SafeAreaProvider>
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: "#0a0a0f" }}>
       <QueryClientProvider client={queryClient}>
         <Stack
@@ -79,5 +81,6 @@ export default function RootLayout() {
         </Stack>
       </QueryClientProvider>
     </GestureHandlerRootView>
+    </SafeAreaProvider>
   );
 }

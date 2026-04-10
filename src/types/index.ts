@@ -81,6 +81,7 @@ export interface ScannedCard {
   imageUri: string | null;
   scryfallUri: string | null;
   addedAt: number;
+  destination?: "LGS" | "BULK" | null;
 }
 
 // ROI / Dashboard types

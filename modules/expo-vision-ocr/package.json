@@ -1,0 +1,10 @@
+{
+  "name": "expo-vision-ocr",
+  "version": "1.0.0",
+  "description": "Local Expo module: Apple Vision text recognition for iOS",
+  "main": "index.ts",
+  "peerDependencies": {
+    "expo": "*"
+  },
+  "private": true
+}

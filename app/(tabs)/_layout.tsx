@@ -34,6 +34,14 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="decks"
+        options={{
+          title: "Decks",
+          headerShown: false,
+          tabBarIcon: ({ focused }) => <TabIcon emoji="🃏" focused={focused} />,
+        }}
+      />
+      <Tabs.Screen
         name="scanner"
         options={{
           title: "Scry",
@@ -59,6 +67,13 @@ export default function TabsLayout() {
         options={{
           title: "Share",
           tabBarIcon: ({ focused }) => <TabIcon emoji="⚡" focused={focused} />,
+        }}
+      />
+      <Tabs.Screen
+        name="compete"
+        options={{
+          title: "Compete",
+          tabBarIcon: ({ focused }) => <TabIcon emoji="🏆" focused={focused} />,
         }}
       />
     </Tabs>

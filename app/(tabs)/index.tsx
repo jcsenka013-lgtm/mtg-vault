@@ -1,402 +1,345 @@
 import { useState, useCallback } from "react";
 import {
-  View, Text, ScrollView, Pressable,
-  TextInput, ActivityIndicator, StyleSheet, Alert, ImageBackground,
+  View, Text, ScrollView, Pressable, Image,
+  ActivityIndicator, StyleSheet, ImageBackground,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { router, useFocusEffect } from "expo-router";
-import { useAppStore } from "@store/appStore";
 import { useAuthStore } from "@store/authStore";
-import { getAllSessions, calculateSessionROI, updateSessionCost, deleteSession } from "@db/queries";
-import { supabase } from "@/lib/supabase";
-import type { DbSession } from "@/lib/supabase";
-import type { SessionROI } from "@mtgtypes/index";
-import { themes, type ManaTheme } from "@/theme";
+import { getAllCards } from "@db/queries";
+import type { DbCard } from "@/lib/supabase";
+import { useLeaderboard } from "@/hooks/useLeaderboard";
 
-const MANA_ORBS: { icon: string; theme: ManaTheme; bg: string }[] = [
-  { icon: "☀️", theme: "W", bg: "#d4c060" },
-  { icon: "💧", theme: "U", bg: "#3a7ac0" },
-  { icon: "💀", theme: "B", bg: "#7a50a0" },
-  { icon: "🔥", theme: "R", bg: "#c04020" },
-  { icon: "🌳", theme: "G", bg: "#207a40" },
-];
-
-const RARITY_COLORS: Record<string, string> = {
+const RARITY_DOT: Record<string, string> = {
   mythic: "#e87a3c",
   rare: "#e8c060",
   uncommon: "#8ab4c4",
   common: "#a0a0b0",
 };
 
-export default function DashboardScreen() {
-  const { activeSession, setActiveSession, updateSessionCost: updateStoreCost, activeTheme, setTheme } = useAppStore();
-  const { signOut } = useAuthStore();
-  const [sessions, setSessions] = useState<DbSession[]>([]);
-  const [roi, setRoi] = useState<SessionROI | null>(null);
-  const [costInput, setCostInput] = useState("");
-  const [loading, setLoading] = useState(false);
+const MANA_COLOR_BG: Record<string, string> = {
+  W: "#c8b84a",
+  U: "#3a7ac0",
+  B: "#7a50a0",
+  R: "#c04020",
+  G: "#207a40",
+};
 
-  const loadData = useCallback(async () => {
+export default function DashboardScreen() {
+  const insets = useSafeAreaInsets();
+  const { user, signOut } = useAuthStore();
+  const [cards, setCards] = useState<DbCard[]>([]);
+  const [loading, setLoading] = useState(false);
+  const { leaderboard, activeSeason } = useLeaderboard();
+
+  const loadDashboard = useCallback(async () => {
     setLoading(true);
     try {
-      const allSessions = await getAllSessions();
-      setSessions(allSessions);
-      if (activeSession) {
-        const roiData = await calculateSessionROI(activeSession.id);
-        setRoi(roiData);
-        setCostInput(activeSession.costPaid > 0 ? String(activeSession.costPaid) : "");
-      }
+      const allCards = await getAllCards();
+      setCards(allCards);
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
-  }, [activeSession]);
+  }, []);
 
-  useFocusEffect(useCallback(() => { loadData(); }, [loadData]));
+  useFocusEffect(useCallback(() => { loadDashboard(); }, [loadDashboard]));
 
-  const handleDeleteSession = async (id: string, name: string) => {
-    const confirmed =
-      typeof window !== "undefined"
-        ? window.confirm(`Delete "${name}"? This will remove all cards in this opening.`)
-        : await new Promise<boolean>(resolve =>
-          Alert.alert(
-            "Delete Opening",
-            `Delete "${name}"? This will remove all cards in this opening.`,
-            [
-              { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-              { text: "Delete", style: "destructive", onPress: () => resolve(true) },
-            ]
-          )
-        );
-    if (!confirmed) return;
-    await deleteSession(id);
-    if (activeSession?.id === id) setActiveSession(null);
-    loadData();
-  };
+  // Triage vault value
+  let lgsValue = 0;
+  let ebayValue = 0;
+  cards.forEach(card => {
+    const price = card.is_foil
+      ? (card.price_usd_foil ?? card.price_usd ?? 0)
+      : (card.price_usd ?? 0);
+    const total = price * card.quantity;
+    if (card.destination === "LGS") lgsValue += total;
+    else if (card.destination === "BULK") ebayValue += total;
+    else if (price >= 2.0) lgsValue += total;
+    else ebayValue += total;
+  });
+  const totalVault = lgsValue + ebayValue;
 
-  const handleCostUpdate = async () => {
-    if (!activeSession) return;
-    const cost = parseFloat(costInput);
-    if (isNaN(cost) || cost < 0) return;
-    await updateSessionCost(activeSession.id, cost);
-    updateStoreCost(cost);
-    loadData();
-  };
+  // Player identity
+  const firstName =
+    user?.user_metadata?.display_name ||
+    user?.user_metadata?.name ||
+    user?.email?.split("@")[0] ||
+    "Planeswalker";
 
-  const profit = roi ? roi.profitLoss : 0;
-  const isProfit = profit >= 0;
-  const foilCount = roi ? roi.topCards.filter((c) => c.isFoil).length : 0;
+  const rankIdx = leaderboard.findIndex(
+    p => p.player_name.toLowerCase() === firstName.toLowerCase()
+  );
+  const myStats = rankIdx !== -1 ? leaderboard[rankIdx] : null;
+
+  const QUICK_ACTIONS = [
+    { emoji: "📷", label: "Scan Cards",    sub: "Digitize stack",    route: "/scanner",   accent: "#4a9eff" },
+    { emoji: "📦", label: "Manage Vault",  sub: "Inventory triage",  route: "/inventory", accent: "#c89b3c" },
+    { emoji: "⚔️", label: "Report Match",  sub: "Log season result", route: "/compete",   accent: "#ef4444" },
+    { emoji: "🃏", label: "Deck Builder",  sub: "Draft & construct", route: "/decks",     accent: "#9d4edd" },
+  ];
 
   return (
     <ImageBackground
       source={require("../../assets/bg-lava-tree.jpeg")}
-      style={styles.container}
+      style={S.bg}
       resizeMode="cover"
     >
-      {/* Dark overlay over the full background */}
-      <View style={styles.bgOverlay} />
+      <View style={S.overlay} />
 
-      {/* Hero title bar at the top */}
-      <View style={styles.heroBanner}>
-        {/* Mana orbs — left, single row, tappable to change theme */}
-        <View style={styles.manaOrbsRow}>
-          {MANA_ORBS.map((m) => (
+      <ScrollView
+        style={S.scroll}
+        contentContainerStyle={[S.content, { paddingTop: Math.max(insets.top, 20) }]}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* ── Header ──────────────────────────────────────────────────────── */}
+        <View style={S.headerRow}>
+          <View style={S.headerText}>
+            <Text style={S.eyebrow}>COMMAND CENTER</Text>
+            <Text style={S.greeting}>
+              Welcome back,{" "}
+              <Text style={S.greetingAccent}>{firstName}</Text>
+            </Text>
+          </View>
+          <Pressable style={S.signOutBtn} onPress={() => signOut()}>
+            <Text style={S.signOutText}>🚪 Out</Text>
+          </Pressable>
+        </View>
+
+        {/* ── Vault Summary Card ───────────────────────────────────────────── */}
+        <View style={S.vaultCard}>
+          <Text style={S.vaultEyebrow}>TOTAL VAULT VALUE</Text>
+          <Text style={S.vaultTotal}>${totalVault.toFixed(2)}</Text>
+          <View style={S.vaultDivider} />
+          <View style={S.vaultBreakdown}>
+            <View style={S.vaultSplit}>
+              <View style={[S.vaultDot, { backgroundColor: "#c89b3c" }]} />
+              <Text style={S.vaultSplitLabel}>LGS Credit</Text>
+              <Text style={S.vaultSplitValue}>${lgsValue.toFixed(2)}</Text>
+            </View>
+            <View style={S.vaultDividerV} />
+            <View style={S.vaultSplit}>
+              <View style={[S.vaultDot, { backgroundColor: "#606078" }]} />
+              <Text style={S.vaultSplitLabel}>eBay Bulk</Text>
+              <Text style={S.vaultSplitValue}>${ebayValue.toFixed(2)}</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* ── Live Season Widget ───────────────────────────────────────────── */}
+        {activeSeason && (
+          <View style={S.seasonCard}>
+            <View style={S.seasonHeader}>
+              <View style={S.seasonLeft}>
+                <View style={S.liveRow}>
+                  <View style={S.liveDot} />
+                  <Text style={S.liveLabel}>LIVE SEASON</Text>
+                </View>
+                <Text style={S.seasonTitle} numberOfLines={1}>{activeSeason.title}</Text>
+              </View>
+              {myStats && (
+                <View style={S.recordPill}>
+                  <Text style={S.recordText}>{myStats.wins}W  –  {myStats.losses}L</Text>
+                </View>
+              )}
+            </View>
+
+            <View style={S.standingRow}>
+              {myStats ? (
+                <>
+                  <View style={S.standingLeft}>
+                    <Text style={S.standingEyebrow}>Your Standing</Text>
+                    <Text style={S.standingRank}>
+                      {rankIdx === 0
+                        ? "🏆 1st Place"
+                        : `Rank #${rankIdx + 1}`}
+                    </Text>
+                  </View>
+                  <View style={S.colorPips}>
+                    {myStats.deck_colors.map((c, i) => (
+                      <View
+                        key={i}
+                        style={[S.pip, { backgroundColor: MANA_COLOR_BG[c] ?? "#333" }]}
+                      >
+                        <Text style={S.pipText}>{c}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </>
+              ) : (
+                <Text style={S.noMatches}>
+                  You haven't played any matches in this season yet.
+                </Text>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* ── Quick Action Grid ─────────────────────────────────────────────── */}
+        <Text style={S.sectionLabel}>QUICK ACTIONS</Text>
+        <View style={S.gridRow}>
+          {QUICK_ACTIONS.slice(0, 2).map(a => (
             <Pressable
-              key={m.theme}
-              style={[
-                styles.manaOrb,
-                { backgroundColor: m.bg, opacity: activeTheme === m.theme ? 1 : 0.55 },
-                activeTheme === m.theme && styles.manaOrbActive,
-              ]}
-              onPress={() => {
-                setTheme(m.theme);
-                supabase.auth.updateUser({ data: { mana_type: m.theme } });
-              }}
+              key={a.label}
+              style={S.actionCard}
+              onPress={() => router.push(a.route as any)}
             >
-              <Text style={styles.manaOrbIcon}>{m.icon}</Text>
+              <View style={[S.actionIconBg, { backgroundColor: a.accent + "22" }]}>
+                <Text style={S.actionEmoji}>{a.emoji}</Text>
+              </View>
+              <Text style={S.actionLabel}>{a.label}</Text>
+              <Text style={S.actionSub}>{a.sub}</Text>
+            </Pressable>
+          ))}
+        </View>
+        <View style={[S.gridRow, { marginBottom: 28 }]}>
+          {QUICK_ACTIONS.slice(2, 4).map(a => (
+            <Pressable
+              key={a.label}
+              style={S.actionCard}
+              onPress={() => router.push(a.route as any)}
+            >
+              <View style={[S.actionIconBg, { backgroundColor: a.accent + "22" }]}>
+                <Text style={S.actionEmoji}>{a.emoji}</Text>
+              </View>
+              <Text style={S.actionLabel}>{a.label}</Text>
+              <Text style={S.actionSub}>{a.sub}</Text>
             </Pressable>
           ))}
         </View>
 
-        {/* Centered title */}
-        <View style={styles.heroContent}>
-          <Text style={styles.heroTitle}>⚔️ The Vault</Text>
-          <Text style={styles.heroSubtitle}>Your MTG Collection Hub</Text>
-        </View>
-
-        {/* Sign out — top right */}
-        <Pressable onPress={() => signOut()} style={styles.signOutBtn}>
-          <Text style={styles.signOutText}>🚪 Sign Out</Text>
-        </Pressable>
-      </View>
-
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
-
-        {/* Opening Picker */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Current Opening</Text>
-          <View style={{ flexDirection: "row", gap: 8 }}>
-            <Pressable style={styles.newButton} onPress={() => router.push("/manual-entry")}>
-              <Text style={styles.newButtonText}>✏️ Individual Entry</Text>
-            </Pressable>
-            <Pressable style={styles.newButton} onPress={() => router.push("/session/new")}>
-              <Text style={styles.newButtonText}>⚔️ New Opening</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        {sessions.length === 0 ? (
-          <ImageBackground
-            source={require("../../assets/bg-dark-city.jpg")}
-            style={styles.emptyCard}
-            resizeMode="cover"
-            imageStyle={{ borderRadius: 16, opacity: 0.45 }}
-          >
-            <Text style={styles.emptyEmoji}>🐉</Text>
-            <Text style={styles.emptyTitle}>Your vault awaits, Planeswalker</Text>
-            <Text style={styles.emptySubtitle}>
-              Crack open a pack to begin cataloging your collection
-            </Text>
-            <Pressable style={styles.ctaButton} onPress={() => router.push("/session/new")}>
-              <Text style={styles.ctaText}>Begin Your Journey</Text>
-            </Pressable>
-          </ImageBackground>
-        ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.sessionScroll}>
-            {sessions.map((s) => (
-              <View key={s.id} style={[styles.sessionChip, activeSession?.id === s.id && styles.sessionChipActive]}>
+        {/* ── Recent Scans Feed ─────────────────────────────────────────────── */}
+        <Text style={S.sectionLabel}>RECENT SCANS</Text>
+        {loading ? (
+          <ActivityIndicator color="#c89b3c" style={{ marginTop: 12 }} />
+        ) : cards.length > 0 ? (
+          <View style={S.feedCard}>
+            {cards.slice(0, 4).map((c, i) => {
+              const price = c.is_foil
+                ? (c.price_usd_foil ?? c.price_usd)
+                : c.price_usd;
+              const isLast = i === Math.min(cards.length, 4) - 1;
+              return (
                 <Pressable
-                  style={{ flex: 1 }}
-                  onPress={() => setActiveSession({ id: s.id, name: s.name, costPaid: s.cost_paid })}
+                  key={c.id}
+                  style={[S.feedRow, !isLast && S.feedRowBorder]}
+                  onPress={() => router.push(`/card/${c.id}` as any)}
                 >
-                  <Text style={[styles.sessionChipText, activeSession?.id === s.id && styles.sessionChipTextActive]}>
-                    {s.name}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={styles.sessionChipDelete}
-                  onPress={() => handleDeleteSession(s.id, s.name)}
-                  hitSlop={6}
-                >
-                  <Text style={styles.sessionChipDeleteText}>×</Text>
-                </Pressable>
-              </View>
-            ))}
-          </ScrollView>
-        )}
-
-        {activeSession && roi && (
-          <>
-            {/* Collection Summary */}
-            <View style={styles.summaryCard}>
-              <View style={styles.summaryRow}>
-                <View style={styles.summaryItem}>
-                  <Text style={styles.summaryValue}>{roi.totalCards}</Text>
-                  <Text style={styles.summaryLabel}>Cards</Text>
-                </View>
-                <View style={styles.summaryDivider} />
-                <View style={styles.summaryItem}>
-                  <Text style={[styles.summaryValue, { color: RARITY_COLORS.mythic }]}>
-                    {roi.byRarity.mythic.count}
-                  </Text>
-                  <Text style={styles.summaryLabel}>Mythics</Text>
-                </View>
-                <View style={styles.summaryDivider} />
-                <View style={styles.summaryItem}>
-                  <Text style={[styles.summaryValue, { color: RARITY_COLORS.rare }]}>
-                    {roi.byRarity.rare.count}
-                  </Text>
-                  <Text style={styles.summaryLabel}>Rares</Text>
-                </View>
-                <View style={styles.summaryDivider} />
-                <View style={styles.summaryItem}>
-                  <Text style={[styles.summaryValue, { color: "#b8a0f0" }]}>{foilCount}</Text>
-                  <Text style={styles.summaryLabel}>✨ Foils</Text>
-                </View>
-              </View>
-            </View>
-
-            {/* Rarity Breakdown */}
-            <Text style={styles.sectionTitle}>◆ By Rarity</Text>
-            <View style={styles.rarityGrid}>
-              {(["mythic", "rare", "uncommon", "common"] as const).map((rarity) => {
-                const data = roi.byRarity[rarity];
-                const color = RARITY_COLORS[rarity];
-                return (
-                  <View key={rarity} style={[styles.rarityCard, { borderTopColor: color }]}>
-                    <Text style={[styles.rarityDiamond, { color }]}>◆</Text>
-                    <Text style={[styles.rarityName, { color }]}>
-                      {rarity.charAt(0).toUpperCase() + rarity.slice(1)}
-                    </Text>
-                    <Text style={styles.rarityCount}>{data.count}</Text>
-                    <Text style={styles.rarityValue}>${data.value.toFixed(2)}</Text>
+                  {c.image_uri ? (
+                    <Image source={{ uri: c.image_uri }} style={S.feedThumb} />
+                  ) : (
+                    <View style={[S.feedThumb, S.feedThumbBlank]}>
+                      <Text>🃏</Text>
+                    </View>
+                  )}
+                  <View style={S.feedInfo}>
+                    <Text style={S.feedName} numberOfLines={1}>{c.name}</Text>
+                    <View style={S.feedMeta}>
+                      <View style={[S.rarityDot, { backgroundColor: RARITY_DOT[c.rarity] }]} />
+                      <Text style={S.feedSet}>{c.set_code.toUpperCase()}</Text>
+                      {c.is_foil && <Text style={S.feedFoil}>✨</Text>}
+                    </View>
                   </View>
-                );
-              })}
-            </View>
-
-            {/* Highlight Cards */}
-            {roi.topCards.length > 0 && (
-              <>
-                <Text style={[styles.sectionTitle, { marginTop: 20 }]}>✨ Highlight Cards</Text>
-                {roi.topCards.slice(0, 5).map((card) => {
-                  const price = card.isFoil
-                    ? (card.priceUsdFoil ?? card.priceUsd ?? 0)
-                    : (card.priceUsd ?? 0);
-                  return (
-                    <Pressable
-                      key={card.id}
-                      style={styles.topCardRow}
-                      onPress={() => router.push(`/card/${card.id}`)}
-                    >
-                      <Text style={[styles.cardDiamond, { color: RARITY_COLORS[card.rarity] }]}>◆</Text>
-                      <View style={styles.topCardInfo}>
-                        <Text style={styles.topCardName}>{card.name}</Text>
-                        <Text style={styles.topCardSet}>
-                          {card.setCode.toUpperCase()} · {card.isFoil ? "✨ Foil" : card.condition}
-                        </Text>
-                      </View>
-                      <Text style={styles.topCardPrice}>${price.toFixed(2)}</Text>
-                    </Pressable>
-                  );
-                })}
-              </>
-            )}
-
-            {/* Opening Value */}
-            <Text style={[styles.sectionTitle, { marginTop: 24 }]}>📜 Opening Value</Text>
-            <View style={styles.roiRow}>
-              <View style={[styles.roiCard, styles.roiCardHalf]}>
-                <Text style={styles.roiLabel}>Opened For</Text>
-                <TextInput
-                  style={styles.costInput}
-                  value={costInput}
-                  onChangeText={setCostInput}
-                  onBlur={handleCostUpdate}
-                  onSubmitEditing={handleCostUpdate}
-                  keyboardType="decimal-pad"
-                  placeholder="$0.00"
-                  placeholderTextColor="#606078"
-                />
-              </View>
-              <View style={[styles.roiCard, styles.roiCardHalf]}>
-                <Text style={styles.roiLabel}>Collection Worth</Text>
-                <Text style={styles.roiValue}>${roi.totalValue.toFixed(2)}</Text>
-              </View>
-            </View>
-
-            <View style={[styles.plCard, isProfit ? styles.profitBg : styles.lossBg]}>
-              <Text style={styles.plLabel}>{isProfit ? "⬆️ RETURN" : "⬇️ UNDER VALUE"}</Text>
-              <Text style={[styles.plValue, isProfit ? styles.profitText : styles.lossText]}>
-                {isProfit ? "+" : ""}${Math.abs(profit).toFixed(2)}
-              </Text>
-              <Text style={[styles.plPercent, isProfit ? styles.profitText : styles.lossText]}>
-                {isProfit ? "+" : ""}{roi.profitPercent.toFixed(1)}%
-              </Text>
-              <Text style={styles.plCards}>{roi.totalCards} cards cataloged</Text>
-            </View>
-          </>
+                  <Text style={S.feedPrice}>
+                    {price != null ? `$${Number(price).toFixed(2)}` : "—"}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : (
+          <View style={S.emptyFeed}>
+            <Text style={S.emptyEmoji}>🔮</Text>
+            <Text style={S.emptyText}>
+              Your vault is empty. Start scanning to populate your feed.
+            </Text>
+          </View>
         )}
-
-        {loading && <ActivityIndicator color="#c89b3c" style={{ marginTop: 40 }} />}
       </ScrollView>
     </ImageBackground>
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  bgOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(5,5,10,0.72)" },
-  scroll: { flex: 1 },
-  content: { padding: 16, paddingBottom: 40 },
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const CARD   = "rgba(18,18,26,0.90)";
+const BORDER = "#222233";
+const GOLD   = "#c89b3c";
+const DIM    = "#606078";
+const SOFT   = "#a0a0b8";
+const WHITE  = "#f0f0f8";
 
-  // Hero title bar
-  heroBanner: {
-    height: 120,
-    width: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(200,155,60,0.25)",
-  },
-  heroContent: { flex: 1, alignItems: "center" },
-  heroTitle: { color: "#f0f0f8", fontSize: 28, fontWeight: "900", letterSpacing: 2, textShadowColor: "rgba(0,0,0,0.9)", textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 8 },
-  heroSubtitle: { color: "#c89b3c", fontSize: 13, fontWeight: "700", letterSpacing: 1, marginTop: 6, textShadowColor: "rgba(0,0,0,0.9)", textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
-  signOutBtn: { padding: 8 },
-  signOutText: { color: "#ef4444", fontSize: 13, fontWeight: "600" },
+const S = StyleSheet.create({
+  bg:      { flex: 1 },
+  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(5,5,12,0.76)" },
+  scroll:  { flex: 1 },
+  content: { paddingHorizontal: 18, paddingBottom: 48 },
 
-  // Mana orbs
-  manaOrbsRow: { flexDirection: "row", gap: 6, alignItems: "center" },
-  manaOrb: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
-  manaOrbActive: { transform: [{ scale: 1.2 }] },
-  manaOrbIcon: { fontSize: 18 },
+  // Header
+  headerRow:       { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 24 },
+  headerText:      { flex: 1, marginRight: 12 },
+  eyebrow:         { color: DIM, fontSize: 11, fontWeight: "700", letterSpacing: 2, marginBottom: 4 },
+  greeting:        { color: WHITE, fontSize: 28, fontWeight: "900", letterSpacing: 0.5 },
+  greetingAccent:  { color: GOLD },
+  signOutBtn:      { backgroundColor: "rgba(239,68,68,0.12)", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: "rgba(239,68,68,0.25)", marginTop: 4 },
+  signOutText:     { color: "#ef4444", fontSize: 12, fontWeight: "700" },
 
-  // Section Headers
-  sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 },
-  sectionTitle: { color: "#a0a0b8", fontSize: 13, fontWeight: "700", letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 },
+  // Vault card
+  vaultCard:       { backgroundColor: CARD, borderRadius: 24, padding: 22, borderWidth: 1, borderColor: BORDER, marginBottom: 16 },
+  vaultEyebrow:    { color: DIM, fontSize: 10, fontWeight: "700", letterSpacing: 2, marginBottom: 6 },
+  vaultTotal:      { color: WHITE, fontSize: 42, fontWeight: "900", letterSpacing: -1, marginBottom: 18 },
+  vaultDivider:    { height: 1, backgroundColor: BORDER, marginBottom: 16 },
+  vaultBreakdown:  { flexDirection: "row", alignItems: "center" },
+  vaultSplit:      { flex: 1, alignItems: "center" },
+  vaultDot:        { width: 8, height: 8, borderRadius: 4, marginBottom: 4 },
+  vaultSplitLabel: { color: SOFT, fontSize: 11, fontWeight: "600", marginBottom: 4 },
+  vaultSplitValue: { color: WHITE, fontSize: 20, fontWeight: "800" },
+  vaultDividerV:   { width: 1, height: 44, backgroundColor: BORDER, marginHorizontal: 12 },
 
-  // Buttons
-  newButton: { backgroundColor: "rgba(26,26,38,0.85)", paddingHorizontal: 14, paddingVertical: 7, borderRadius: 20, borderWidth: 1, borderColor: "#c89b3c" },
-  newButtonText: { color: "#c89b3c", fontSize: 13, fontWeight: "700" },
+  // Season widget
+  seasonCard:   { backgroundColor: CARD, borderRadius: 20, padding: 18, borderWidth: 1, borderColor: BORDER, borderLeftWidth: 4, borderLeftColor: "#9d4edd", marginBottom: 28 },
+  seasonHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 14 },
+  seasonLeft:   { flex: 1, marginRight: 12 },
+  liveRow:      { flexDirection: "row", alignItems: "center", marginBottom: 4 },
+  liveDot:      { width: 8, height: 8, borderRadius: 4, backgroundColor: "#22c55e", marginRight: 6 },
+  liveLabel:    { color: "#9d4edd", fontSize: 10, fontWeight: "700", letterSpacing: 1.5 },
+  seasonTitle:  { color: WHITE, fontSize: 18, fontWeight: "800" },
+  recordPill:   { backgroundColor: "#1a1a26", borderRadius: 20, paddingHorizontal: 14, paddingVertical: 6, borderWidth: 1, borderColor: BORDER },
+  recordText:   { color: WHITE, fontSize: 13, fontWeight: "700" },
+  standingRow:  { flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: "#12121a", borderRadius: 12, padding: 12, borderWidth: 1, borderColor: BORDER },
+  standingLeft: { flex: 1 },
+  standingEyebrow: { color: DIM, fontSize: 10, fontWeight: "600", marginBottom: 2 },
+  standingRank: { color: WHITE, fontSize: 16, fontWeight: "800" },
+  colorPips:    { flexDirection: "row", gap: 6 },
+  pip:          { width: 26, height: 26, borderRadius: 13, alignItems: "center", justifyContent: "center" },
+  pipText:      { color: WHITE, fontSize: 10, fontWeight: "900" },
+  noMatches:    { color: DIM, fontSize: 13, fontStyle: "italic" },
 
-  // Empty State
-  emptyCard: { backgroundColor: "rgba(18,18,26,0.8)", borderRadius: 16, padding: 32, alignItems: "center", marginTop: 20, borderWidth: 1, borderColor: "#2a1f0a" },
-  emptyEmoji: { fontSize: 56, marginBottom: 14 },
-  emptyTitle: { color: "#f0f0f8", fontSize: 20, fontWeight: "700", marginBottom: 8, textAlign: "center" },
-  emptySubtitle: { color: "#a0a0b8", fontSize: 14, marginBottom: 24, textAlign: "center", lineHeight: 20 },
-  ctaButton: { backgroundColor: "#c89b3c", borderRadius: 12, paddingHorizontal: 24, paddingVertical: 12 },
-  ctaText: { color: "#0a0a0f", fontWeight: "800", fontSize: 15 },
+  // Section label
+  sectionLabel: { color: DIM, fontSize: 10, fontWeight: "700", letterSpacing: 2, marginBottom: 12 },
 
-  // Session Chips
-  sessionScroll: { marginBottom: 20 },
-  sessionChip: { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(26,26,38,0.85)", borderRadius: 20, paddingLeft: 16, paddingRight: 6, paddingVertical: 8, marginRight: 8, borderWidth: 1, borderColor: "#222233", gap: 6 },
-  sessionChipActive: { borderColor: "#c89b3c", backgroundColor: "rgba(30,26,15,0.9)" },
-  sessionChipText: { color: "#a0a0b8", fontWeight: "600" },
-  sessionChipTextActive: { color: "#c89b3c" },
-  sessionChipDelete: { backgroundColor: "rgba(239,68,68,0.15)", borderRadius: 12, width: 22, height: 22, alignItems: "center", justifyContent: "center" },
-  sessionChipDeleteText: { color: "#ef4444", fontSize: 16, fontWeight: "700", lineHeight: 20 },
+  // Quick actions
+  gridRow:      { flexDirection: "row", gap: 12, marginBottom: 12 },
+  actionCard:   { flex: 1, backgroundColor: CARD, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: BORDER },
+  actionIconBg: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", marginBottom: 12 },
+  actionEmoji:  { fontSize: 20 },
+  actionLabel:  { color: WHITE, fontSize: 15, fontWeight: "700", marginBottom: 3 },
+  actionSub:    { color: DIM, fontSize: 12 },
 
-  // Collection Summary Card
-  summaryCard: { backgroundColor: "rgba(18,18,26,0.85)", borderRadius: 16, padding: 16, marginBottom: 20, borderWidth: 1, borderColor: "#222233" },
-  summaryRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-around" },
-  summaryItem: { alignItems: "center", flex: 1 },
-  summaryValue: { color: "#f0f0f8", fontSize: 28, fontWeight: "800", marginBottom: 4 },
-  summaryLabel: { color: "#606078", fontSize: 11, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5 },
-  summaryDivider: { width: 1, height: 40, backgroundColor: "#222233" },
-
-  // Rarity Grid
-  rarityGrid: { flexDirection: "row", gap: 8, marginBottom: 4 },
-  rarityCard: { flex: 1, backgroundColor: "rgba(18,18,26,0.85)", borderRadius: 12, padding: 12, alignItems: "center", borderWidth: 1, borderColor: "#222233", borderTopWidth: 3 },
-  rarityDiamond: { fontSize: 14, marginBottom: 2 },
-  rarityName: { fontSize: 10, fontWeight: "700", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 },
-  rarityCount: { color: "#f0f0f8", fontSize: 20, fontWeight: "800" },
-  rarityValue: { color: "#a0a0b8", fontSize: 11, marginTop: 2 },
-
-  // Top Cards
-  topCardRow: { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(18,18,26,0.85)", borderRadius: 12, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: "#222233" },
-  cardDiamond: { fontSize: 14, marginRight: 12 },
-  topCardInfo: { flex: 1 },
-  topCardName: { color: "#f0f0f8", fontWeight: "700", fontSize: 15 },
-  topCardSet: { color: "#606078", fontSize: 12, marginTop: 2 },
-  topCardPrice: { color: "#22c55e", fontWeight: "800", fontSize: 16 },
-
-  // Financial
-  roiRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
-  roiCard: { backgroundColor: "rgba(18,18,26,0.85)", borderRadius: 16, padding: 16, borderWidth: 1, borderColor: "#222233" },
-  roiCardHalf: { flex: 1 },
-  roiLabel: { color: "#606078", fontSize: 12, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 },
-  roiValue: { color: "#f0f0f8", fontSize: 24, fontWeight: "800" },
-  costInput: { color: "#f0f0f8", fontSize: 24, fontWeight: "800", padding: 0 },
-
-  plCard: { borderRadius: 16, padding: 20, alignItems: "center", marginBottom: 8, borderWidth: 1, borderColor: "#222233" },
-  profitBg: { backgroundColor: "rgba(10,26,15,0.9)" },
-  lossBg: { backgroundColor: "rgba(26,10,10,0.9)" },
-  plLabel: { color: "#a0a0b8", fontSize: 12, fontWeight: "700", letterSpacing: 1.5, marginBottom: 8 },
-  plValue: { fontSize: 40, fontWeight: "900", marginBottom: 4 },
-  plPercent: { fontSize: 20, fontWeight: "700", marginBottom: 8, opacity: 0.8 },
-  plCards: { color: "#606078", fontSize: 13 },
-  profitText: { color: "#22c55e" },
-  lossText: { color: "#ef4444" },
+  // Feed
+  feedCard:      { backgroundColor: CARD, borderRadius: 18, borderWidth: 1, borderColor: BORDER, overflow: "hidden", marginBottom: 8 },
+  feedRow:       { flexDirection: "row", alignItems: "center", padding: 12 },
+  feedRowBorder: { borderBottomWidth: 1, borderColor: BORDER },
+  feedThumb:     { width: 40, height: 56, borderRadius: 6, marginRight: 12 },
+  feedThumbBlank:{ backgroundColor: "#1a1a26", alignItems: "center", justifyContent: "center" },
+  feedInfo:      { flex: 1 },
+  feedName:      { color: WHITE, fontWeight: "700", fontSize: 14, marginBottom: 4 },
+  feedMeta:      { flexDirection: "row", alignItems: "center", gap: 6 },
+  rarityDot:     { width: 6, height: 6, borderRadius: 3 },
+  feedSet:       { color: DIM, fontSize: 12, textTransform: "uppercase" },
+  feedFoil:      { fontSize: 11 },
+  feedPrice:     { color: "#22c55e", fontWeight: "800", fontSize: 15 },
+  emptyFeed:     { backgroundColor: CARD, borderRadius: 18, padding: 32, alignItems: "center", borderWidth: 1, borderColor: BORDER },
+  emptyEmoji:    { fontSize: 40, marginBottom: 12 },
+  emptyText:     { color: SOFT, fontSize: 14, textAlign: "center", lineHeight: 20 },
 });

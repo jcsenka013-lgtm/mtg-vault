@@ -1,5 +1,6 @@
 import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
+import { Platform } from "react-native";
 import type { DbCard } from "@/lib/supabase";
 
 const CSV_HEADERS = [
@@ -40,17 +41,43 @@ export async function exportCardsAsCsv(
   const rows = [CSV_HEADERS, ...cards.map(cardToCsvRow)];
   const csvContent = rows.join("\n");
 
-  const outFile = new File(Paths.cache, filename);
-  outFile.write(csvContent);
-  const fileUri = outFile.uri;
+  if (Platform.OS === "web") {
+    try {
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.style.display = "none";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+      return;
+    } catch (error) {
+      console.error("Web export error:", error);
+      throw new Error("Failed to generate CSV download");
+    }
+  }
 
-  const canShare = await Sharing.isAvailableAsync();
-  if (canShare) {
-    await Sharing.shareAsync(fileUri, {
-      mimeType: "text/csv",
-      dialogTitle: "Export MTG Card List",
-      UTI: "public.comma-separated-values-text",
-    });
+  // Mobile implementation (Native)
+  try {
+    const file = new File(Paths.cache, filename);
+    await file.write(csvContent);
+
+    const isSharingAvailable = await Sharing.isAvailableAsync();
+    if (isSharingAvailable) {
+      await Sharing.shareAsync(file.uri, {
+        mimeType: "text/csv",
+        dialogTitle: "Export MTG Card List",
+        UTI: "public.comma-separated-values-text",
+      });
+    } else {
+      throw new Error("Sharing is not available on this device");
+    }
+  } catch (error) {
+    console.error("Mobile export error:", error);
+    throw error;
   }
 }
 

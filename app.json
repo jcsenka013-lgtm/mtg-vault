@@ -48,6 +48,12 @@
         {
           "cameraPermission": "MTG Scanner uses the camera to scan Magic: The Gathering cards."
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The Vault accesses your photos to import binder pages for scanning."
+        }
       ]
     ],
     "experiments": {

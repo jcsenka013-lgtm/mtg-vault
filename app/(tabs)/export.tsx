@@ -9,6 +9,7 @@ import {
   Alert,
   Switch,
   ImageBackground,
+  Platform,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { useAppStore } from "@store/appStore";
@@ -81,14 +82,18 @@ export default function ExportScreen() {
 
   const handleExportCsv = async () => {
     if (selectedCards.length === 0) {
-      Alert.alert("No cards selected", "Please select at least one card to export.");
+      const msg = "Please select at least one card to export.";
+      if (Platform.OS === "web") window.alert(msg);
+      else Alert.alert("No cards selected", msg);
       return;
     }
     setExporting(true);
     try {
       await exportCardsAsCsv(selectedCards, `mtg-export-${Date.now()}.csv`);
     } catch (e) {
-      Alert.alert("Export failed", String(e));
+      const msg = String(e);
+      if (Platform.OS === "web") window.alert("Export failed: " + msg);
+      else Alert.alert("Export failed", msg);
     } finally {
       setExporting(false);
     }
@@ -96,12 +101,17 @@ export default function ExportScreen() {
 
   const handleCopyList = async () => {
     if (selectedCards.length === 0) {
-      Alert.alert("No cards selected", "Select at least one card first.");
+      const msg = "Select at least one card first.";
+      if (Platform.OS === "web") window.alert(msg);
+      else Alert.alert("No cards selected", msg);
       return;
     }
     const text = formatAsTcgPlayerList(selectedCards);
     await Clipboard.setStringAsync(text);
-    Alert.alert("Copied!", `${selectedCards.length} cards copied to clipboard in TCGplayer format.`);
+    
+    const successMsg = `${selectedCards.length} cards copied to clipboard in TCGplayer format.`;
+    if (Platform.OS === "web") window.alert(successMsg);
+    else Alert.alert("Copied!", successMsg);
   };
 
   const renderCard = ({ item }: { item: DbCard }) => {
