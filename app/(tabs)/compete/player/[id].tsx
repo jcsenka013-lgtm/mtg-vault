@@ -59,7 +59,10 @@ export default function PlayerProfileScreen() {
 
     useEffect(() => {
         async function fetchProfile() {
-            if (!id) return;
+            if (!id || id === "undefined") {
+                setLoading(false);
+                return;
+            }
             setLoading(true);
             setError(null);
             try {
