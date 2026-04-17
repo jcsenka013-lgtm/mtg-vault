@@ -9,6 +9,9 @@ export const KnowledgeGraph = (props: any) => {
     return (
       <WithSkiaWeb
         getComponent={() => import("./KnowledgeGraphInternal")}
+        opts={{
+          locateFile: (file) => `https://unpkg.com/canvaskit-wasm@0.41.1/bin/full/${file}`,
+        }}
         fallback={
           <View style={styles.loading}>
             <Text style={styles.text}>Initializing Forge Visualization...</Text>
