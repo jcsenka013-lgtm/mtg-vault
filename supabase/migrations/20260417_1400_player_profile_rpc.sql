@@ -1,5 +1,5 @@
 -- ============================================================
--- Player Profile RPC - Advanced Data Layer
+-- Player Profile RPC - Advanced Data Layer (BUGFIX VERSION)
 -- MTG Vault — April 2026
 -- ============================================================
 
@@ -46,12 +46,12 @@ BEGIN
     pct := 0;
   END IF;
 
-  -- Favorite Colors: Most frequent deck_colors across all seasons
+  -- Favorite Colors: Qualified with 'sp' alias to prevent ambiguity
   WITH color_flat AS (
-    SELECT unnest(deck_colors) AS color
-    FROM public.season_participants
-    WHERE player_id = p_id
-      AND array_length(deck_colors, 1) > 0
+    SELECT unnest(sp.deck_colors) AS color
+    FROM public.season_participants sp
+    WHERE sp.player_id = p_id
+      AND array_length(sp.deck_colors, 1) > 0
   )
   SELECT array_agg(color ORDER BY cnt DESC)
   INTO fav_colors
@@ -63,7 +63,7 @@ BEGIN
     LIMIT 3
   ) AS top_colors;
 
-  -- Rivalry Matrix: Head-to-head vs every other player
+  -- Rivalry Matrix
   SELECT jsonb_agg(jsonb_build_object(
     'opponent_id', opp.id,
     'opponent_name', opp.name,
@@ -84,7 +84,7 @@ BEGIN
   ) l ON true
   WHERE opp.id <> p_id;
 
-  -- Nemesis: Player who has beaten this player the most
+  -- Nemesis
   SELECT opp.name, COUNT(*)::BIGINT
   INTO n_name, n_losses_val
   FROM public.matches m
@@ -94,7 +94,7 @@ BEGIN
   ORDER BY COUNT(*) DESC
   LIMIT 1;
 
-  -- Favorite Victim: Player this player has beaten the most
+  -- Favorite Victim
   SELECT opp.name, COUNT(*)::BIGINT
   INTO v_name, v_wins_val
   FROM public.matches m
@@ -104,9 +104,10 @@ BEGIN
   ORDER BY COUNT(*) DESC
   LIMIT 1;
 
+  -- Use explicit qualification in the return
   RETURN QUERY SELECT
     p_id,
-    (SELECT name FROM public.players WHERE id = p_id),
+    p.name,
     total_wins,
     total_losses,
     pct,
@@ -115,13 +116,11 @@ BEGIN
     COALESCE(n_name, 'None'),
     COALESCE(n_losses_val, 0),
     COALESCE(v_name, 'None'),
-    COALESCE(v_wins_val, 0);
+    COALESCE(v_wins_val, 0)
+  FROM public.players p
+  WHERE p.id = p_id;
 END;
 $$;
-
--- Enable RLS for function (needs to read from all tables)
-DROP POLICY IF EXISTS "get_player_profile_public" ON public.players;
-CREATE POLICY "get_player_profile_public" ON public.players FOR SELECT USING (true);
 
 -- Lifetime Leaderboard RPC
 CREATE OR REPLACE FUNCTION public.get_lifetime_leaderboard()
