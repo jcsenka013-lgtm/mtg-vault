@@ -300,7 +300,12 @@ export default function CompeteScreen() {
                     styles.row,
                     isLeader && styles.rowLeader,
                 ]}
-                onPress={() => router.push(`/compete/player/${playerId}` as any)}
+                onPress={() => {
+                    const id = item.player_id || item.id;
+                    if (id) {
+                        router.push(`/compete/player/${id}` as any);
+                    }
+                }}
             >
                 {/* Rank */}
                 <RankBadge rank={rank} />
