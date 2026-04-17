@@ -23,10 +23,19 @@ export interface ActiveSeason {
   title: string;
 }
 
+export interface LifetimeEntry {
+  player_id: string;
+  player_name: string;
+  lifetime_wins: number;
+  lifetime_losses: number;
+  win_percentage: number;
+}
+
 export interface UseLeaderboardResult {
   leaderboard: LeaderboardEntry[];
   activeSeason: ActiveSeason | null;
   participants: SeasonParticipant[];
+  lifetimeLeaderboard: LifetimeEntry[];
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -39,6 +48,7 @@ export function useLeaderboard(): UseLeaderboardResult {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [activeSeason, setActiveSeason] = useState<ActiveSeason | null>(null);
   const [participants, setParticipants] = useState<SeasonParticipant[]>([]);
+  const [lifetimeLeaderboard, setLifetimeLeaderboard] = useState<LifetimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,6 +86,11 @@ export function useLeaderboard(): UseLeaderboardResult {
           deck_colors: (p.deck_colors ?? []) as string[],
         }))
       );
+
+      // 4. Fetch lifetime leaderboard
+      const { data: life, error: lifeErr } = await supabase.rpc("get_lifetime_leaderboard");
+      if (lifeErr) throw lifeErr;
+      setLifetimeLeaderboard((life ?? []) as LifetimeEntry[]);
     } catch (err: any) {
       setError(err.message ?? "Failed to load leaderboard.");
     } finally {
@@ -124,5 +139,5 @@ export function useLeaderboard(): UseLeaderboardResult {
     refresh();
   }, [refresh]);
 
-  return { leaderboard, activeSeason, participants, loading, error, refresh, startNewSeason };
+  return { leaderboard, activeSeason, participants, lifetimeLeaderboard, loading, error, refresh, startNewSeason };
 }

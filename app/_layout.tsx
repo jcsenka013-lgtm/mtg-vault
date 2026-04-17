@@ -78,6 +78,13 @@ export default function RootLayout() {
               gestureEnabled: false,
             }}
           />
+          <Stack.Screen
+            name="compete/player/[id]"
+            options={{
+              title: "Player Profile",
+              headerShown: false,
+            }}
+          />
         </Stack>
       </QueryClientProvider>
     </GestureHandlerRootView>

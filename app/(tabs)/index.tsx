@@ -9,6 +9,7 @@ import { useAuthStore } from "@store/authStore";
 import { getAllCards } from "@db/queries";
 import type { DbCard } from "@/lib/supabase";
 import { useLeaderboard } from "@/hooks/useLeaderboard";
+import { KnowledgeGraph } from "@/components/Visualizer/KnowledgeGraph";
 
 const RARITY_DOT: Record<string, string> = {
   mythic: "#e87a3c",
@@ -126,6 +127,9 @@ export default function DashboardScreen() {
             </View>
           </View>
         </View>
+        
+        {/* ── Forensic Knowledge Graph ─────────────────────────────────────── */}
+        <KnowledgeGraph />
 
         {/* ── Live Season Widget ───────────────────────────────────────────── */}
         {activeSeason && (

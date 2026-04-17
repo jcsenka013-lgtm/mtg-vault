@@ -15,11 +15,13 @@ import {
     TextInput,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { supabase } from "@/lib/supabase";
 import {
     useLeaderboard,
     type LeaderboardEntry,
     type SeasonParticipant,
+    type LifetimeEntry,
 } from "@/hooks/useLeaderboard";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -134,8 +136,12 @@ function PlayerTile({ participant, isSelected, isDisabled, onPress }: PlayerTile
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function CompeteScreen() {
-    const { leaderboard, activeSeason, participants, loading, error, refresh, startNewSeason } =
+    const router = useRouter();
+    const { leaderboard, activeSeason, participants, lifetimeLeaderboard, loading, error, refresh, startNewSeason } =
         useLeaderboard();
+    const [lifetimeMode, setLifetimeMode] = useState(false);
+
+    const currentData = lifetimeMode ? lifetimeLeaderboard : leaderboard;
 
     // ── Season Manager Modal State ──
     const [managerVisible, setManagerVisible] = useState(false);
@@ -265,20 +271,36 @@ export default function CompeteScreen() {
         item,
         index,
     }: {
-        item: LeaderboardEntry;
+        item: any;
         index: number;
     }) => {
         const rank = index + 1;
         const isLeader = rank === 1;
-        const total = Number(item.wins) + Number(item.losses);
-        const winPct = total > 0 ? Math.round((Number(item.wins) / total) * 100) : null;
+        
+        const playerId = item.player_id;
+        const playerName = item.player_name;
+        
+        let wins: number, losses: number, winPct: number | null, deckColors: string[] = [];
+        
+        if (lifetimeMode) {
+            wins = Number(item.lifetime_wins);
+            losses = Number(item.lifetime_losses);
+            winPct = Number(item.win_percentage);
+        } else {
+            wins = Number(item.wins);
+            losses = Number(item.losses);
+            const total = wins + losses;
+            winPct = total > 0 ? Math.round((wins / total) * 100) : null;
+            deckColors = item.deck_colors || [];
+        }
 
         return (
-            <View
+            <Pressable
                 style={[
                     styles.row,
                     isLeader && styles.rowLeader,
                 ]}
+                onPress={() => router.push(`/compete/player/${playerId}` as any)}
             >
                 {/* Rank */}
                 <RankBadge rank={rank} />
@@ -286,11 +308,11 @@ export default function CompeteScreen() {
                 {/* Name + Colors */}
                 <View style={styles.rowPlayer}>
                     <Text style={[styles.rowName, isLeader && styles.rowNameLeader]}>
-                        {item.player_name}
+                        {playerName}
                     </Text>
-                    {item.deck_colors.length > 0 && (
+                    {!lifetimeMode && deckColors.length > 0 && (
                         <View style={styles.colorPips}>
-                            {item.deck_colors.map((c) => (
+                            {deckColors.map((c: string) => (
                                 <ColorPip key={c} color={c} size={16} />
                             ))}
                         </View>
@@ -300,15 +322,18 @@ export default function CompeteScreen() {
                 {/* Record */}
                 <View style={styles.rowRecord}>
                     <Text style={styles.rowRecordText}>
-                        <Text style={styles.winsText}>{item.wins}W</Text>
+                        <Text style={styles.winsText}>{wins}W</Text>
                         {"  "}
-                        <Text style={styles.lossesText}>{item.losses}L</Text>
+                        <Text style={styles.lossesText}>{losses}L</Text>
                     </Text>
-                    {winPct !== null && (
+                    {winPct !== null && winPct > 0 && (
                         <Text style={styles.winPct}>{winPct}%</Text>
                     )}
+                    {lifetimeMode && (
+                        <Ionicons name="chevron-forward" size={16} color="#404058" />
+                    )}
                 </View>
-            </View>
+            </Pressable>
         );
     };
 
@@ -344,19 +369,42 @@ export default function CompeteScreen() {
             {/* ── Season Header ── */}
             <View style={styles.header}>
                 <View style={styles.headerEyebrowRow}>
-                    <View style={styles.activeDot} />
-                    <Text style={styles.headerEyebrow}>ACTIVE SEASON</Text>
+                    {!lifetimeMode && <View style={styles.activeDot} />}
+                    <Text style={styles.headerEyebrow}>
+                        {lifetimeMode ? "LIFETIME LEGACY" : "ACTIVE SEASON"}
+                    </Text>
                 </View>
                 <Text style={styles.headerTitle}>
-                    {activeSeason?.title ?? "Leaderboard"}
+                    {lifetimeMode ? "All-Time Champions" : activeSeason?.title ?? "Leaderboard"}
                 </Text>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                     <Text style={styles.headerMeta}>
-                        {leaderboard.length} players · {totalMatches} match
-                        {totalMatches !== 1 ? "es" : ""} played
+                        {lifetimeMode 
+                            ? `${lifetimeLeaderboard.length} players · all matches`
+                            : `${leaderboard.length} players · ${totalMatches} match${totalMatches !== 1 ? 'es' : ''} played`
+                        }
                     </Text>
                     <Pressable onPress={() => setManagerVisible(true)}>
                         <Ionicons name="settings" size={24} color="#606078" />
+                    </Pressable>
+                </View>
+                {/* Toggle */}
+                <View style={styles.toggleContainer}>
+                    <Pressable 
+                        style={[styles.toggleBtn, !lifetimeMode && styles.toggleBtnActive]}
+                        onPress={() => setLifetimeMode(false)}
+                    >
+                        <Text style={[styles.toggleText, !lifetimeMode && styles.toggleTextActive]}>
+                            Season
+                        </Text>
+                    </Pressable>
+                    <Pressable 
+                        style={[styles.toggleBtn, lifetimeMode && styles.toggleBtnActive]}
+                        onPress={() => setLifetimeMode(true)}
+                    >
+                        <Text style={[styles.toggleText, lifetimeMode && styles.toggleTextActive]}>
+                            Lifetime
+                        </Text>
                     </Pressable>
                 </View>
             </View>
@@ -372,7 +420,7 @@ export default function CompeteScreen() {
 
             {/* ── Leaderboard ── */}
             <FlatList
-                data={leaderboard}
+                data={currentData}
                 keyExtractor={(item) => item.player_id}
                 renderItem={renderRow}
                 contentContainerStyle={styles.listContent}
@@ -784,6 +832,33 @@ const styles = StyleSheet.create({
         color: "#c89b3c",
         fontWeight: "700",
         fontSize: 14,
+    },
+
+    // ── Toggle ──
+    toggleContainer: {
+        flexDirection: "row",
+        backgroundColor: "#1a1a26",
+        borderRadius: 10,
+        padding: 4,
+        marginTop: 16,
+        gap: 4,
+    },
+    toggleBtn: {
+        flex: 1,
+        paddingVertical: 10,
+        borderRadius: 8,
+        alignItems: "center",
+    },
+    toggleBtnActive: {
+        backgroundColor: "#c89b3c",
+    },
+    toggleText: {
+        color: "#606078",
+        fontSize: 13,
+        fontWeight: "700",
+    },
+    toggleTextActive: {
+        color: "#0a0a0f",
     },
 
     // ── FAB ──

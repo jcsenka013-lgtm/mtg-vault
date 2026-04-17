@@ -44,3 +44,4 @@ yarn-error.*
 # personal local
 tsc-final.txt
 .env
+.vercel
