@@ -6,9 +6,12 @@ import {
 import { router, useFocusEffect } from "expo-router";
 import { supabase } from "@/lib/supabase";
 import type { DbDeck } from "@/lib/supabase";
+import { routes } from "@/navigation/routes";
+
+type DeckListRow = DbDeck & { deck_cards?: { count: number }[] | null };
 
 export default function DecksScreen() {
-  const [decks, setDecks] = useState<DbDeck[]>([]);
+  const [decks, setDecks] = useState<DeckListRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -47,7 +50,7 @@ export default function DecksScreen() {
       setCreating(false);
       setNewName("");
       setNewFormat("Draft");
-      router.push(`/decks/${data.id}` as any);
+      router.push(routes.deckDetail(data.id));
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Could not create deck.");
     }
@@ -140,11 +143,11 @@ export default function DecksScreen() {
           keyExtractor={d => d.id}
           contentContainerStyle={{ padding: 14, paddingBottom: 40 }}
           renderItem={({ item: deck }) => {
-            const cardCount = (deck as any).deck_cards?.[0]?.count ?? deck.card_count ?? 0;
+            const cardCount = deck.deck_cards?.[0]?.count ?? deck.card_count ?? 0;
             return (
               <Pressable
                 style={S.deckCard}
-                onPress={() => router.push(`/decks/${deck.id}` as any)}
+                onPress={() => router.push(routes.deckDetail(deck.id))}
               >
                 <View style={S.deckLeft}>
                   <View style={S.deckIconBg}>
@@ -153,7 +156,7 @@ export default function DecksScreen() {
                   <View style={S.deckMeta}>
                     <Text style={S.deckName} numberOfLines={1}>{deck.name}</Text>
                     <Text style={S.deckSub}>
-                      {deck.format ?? "Draft"}  ·  {new Date(deck.created_at).toLocaleDateString()}
+                      {deck.format ?? "Draft"}  ·  {deck.created_at ? new Date(deck.created_at).toLocaleDateString() : "—"}
                     </Text>
                   </View>
                 </View>

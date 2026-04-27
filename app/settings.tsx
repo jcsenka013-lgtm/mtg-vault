@@ -44,7 +44,7 @@ export default function SettingsScreen() {
                     }
                 } else {
                     const now = Math.floor(Date.now() / 1000);
-                    if (data.ebay_expires_at > now) {
+                    if (new Date(data.expires_at).getTime() / 1000 > now) {
                         setIsConnected(true);
                     } else {
                         setIsConnected(false);

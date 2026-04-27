@@ -9,13 +9,15 @@ import {
     TextInput,
     Modal,
     ScrollView,
+    ActivityIndicator,
 } from "react-native";
-import { router, useSegments } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppStore } from "@/store/appStore";
 import { useAuthStore } from "@/store/authStore";
 import { getWishlistItems, addWishlistItem, removeWishlistItem, updateWishlistItem } from "@/db/queries";
 import { themes } from "@/theme";
+import type { Tables } from "@/lib/supabase";
 
 const RARITY_COLORS: Record<string, string> = {
     mythic: "#e87a3c",
@@ -24,21 +26,7 @@ const RARITY_COLORS: Record<string, string> = {
     common: "#a0a0b0",
 };
 
-interface WishlistItem {
-    id: string;
-    card_id: string | null;
-    scryfall_id: string;
-    name: string;
-    set_code: string | null;
-    set_name: string | null;
-    collector_number: string | null;
-    rarity: string | null;
-    price_target: number | null;
-    is_foil: boolean;
-    condition: string;
-    created_at: string;
-    updated_at: string;
-}
+type WishlistItem = Tables<"wishlist">;
 
 export default function WishlistScreen() {
     const insets = useSafeAreaInsets();
@@ -63,13 +51,11 @@ export default function WishlistScreen() {
         }
     }, []);
 
-    // Load data on mount and when focused
-    React.useEffect(() => {
-        const unsubscribe = router.events?.subscribe(() => {
-            loadData();
-        });
-        return () => unsubscribe?.();
-    }, [loadData]);
+    useFocusEffect(
+        useCallback(() => {
+            void loadData();
+        }, [loadData])
+    );
 
     const handleAddPress = () => {
         setShowModal(true);

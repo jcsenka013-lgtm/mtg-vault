@@ -15,6 +15,7 @@ import {
     Dimensions,
 } from "react-native";
 import { router } from "expo-router";
+import { routes } from "@/navigation/routes";
 import { useAppStore } from "@store/appStore";
 import { supabase } from "@/lib/supabase";
 import type { DbCard } from "@/lib/supabase";
@@ -118,7 +119,7 @@ export default function DeckBuilderScreen() {
     const getCardsByZone = (zone: string) => {
         return Array.from(deckList.values())
             .filter(item => item.zone === zone)
-            .sort((a, b) => a.card.name.localeCompare(b.name));
+            .sort((a, b) => a.card.name.localeCompare(b.card.name));
     };
 
     // Calculate total cards in deck
@@ -130,8 +131,11 @@ export default function DeckBuilderScreen() {
         setSaving(true);
         try {
             // Start transaction
+            const { data: authData } = await supabase.auth.getUser();
+            const uid = authData.user?.id;
+            if (!uid) throw new Error("Sign in to save a deck.");
             await supabase.rpc("save_deck", {
-                userId: activeSession.user_id,
+                userId: uid,
                 name: deckName,
                 format: deckFormat,
                 eventDate: deckDate,
@@ -142,7 +146,7 @@ export default function DeckBuilderScreen() {
                 })),
             });
             Alert.alert("Success", "Deck saved successfully!");
-            router.push("/decks");
+            router.push(routes.tabsDecks());
         } catch (error) {
             console.error("Failed to save deck:", error);
             Alert.alert("Error", "Failed to save deck. Please try again.");
@@ -158,9 +162,9 @@ export default function DeckBuilderScreen() {
 
         // Sort by rarity then CMC
         const sorted = [...allCards].sort((a, b) => {
-            const rarityOrder = { mythic: 4, rare: 3, uncommon: 2, common: 1 };
-            const aRarity = rarityOrder[a.card.rarity] || 0;
-            const bRarity = rarityOrder[b.card.rarity] || 0;
+            const rarityOrder: Record<string, number> = { mythic: 4, rare: 3, uncommon: 2, common: 1 };
+            const aRarity = rarityOrder[a.card.rarity] ?? 0;
+            const bRarity = rarityOrder[b.card.rarity] ?? 0;
             if (aRarity !== bRarity) return bRarity - aRarity;
             const aCmc = a.card.cmc || 0;
             const bCmc = b.card.cmc || 0;
@@ -170,6 +174,13 @@ export default function DeckBuilderScreen() {
     };
 
     const coverCard = getCoverCard();
+
+    function getCurveColor(cmc: number): string {
+        if (cmc === 0) return MANA_COLORS.C;
+        if (cmc <= 3) return MANA_COLORS.G;
+        if (cmc <= 5) return MANA_COLORS.R;
+        return MANA_COLORS.B;
+    }
 
     return (
         <View style={styles.container}>
@@ -427,13 +438,6 @@ export default function DeckBuilderScreen() {
             </Pressable>
         </View>
     );
-
-    function getCurveColor(cmc: number): string {
-        if (cmc === 0) return MANA_COLORS.C;
-        if (cmc <= 3) return MANA_COLORS.G;
-        if (cmc <= 5) return MANA_COLORS.R;
-        return MANA_COLORS.B;
-    }
 }
 
 const styles = StyleSheet.create({
@@ -671,6 +675,11 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         borderColor: "#333344",
     },
+    quantityText: {
+        color: "#f0f0f8",
+        fontSize: 16,
+        fontWeight: "700",
+    },
     quantityValue: {
         fontSize: 16,
         fontWeight: "bold",
@@ -711,4 +720,4 @@ const styles = StyleSheet.create({
         fontSize: 16,
         fontWeight: "700",
     },
-});
+});

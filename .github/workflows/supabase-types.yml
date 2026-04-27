@@ -1,0 +1,48 @@
+# Weekly refresh of generated Postgres types. Opens a PR when src/types/database.ts drifts.
+name: Supabase database types
+
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Generate TypeScript types
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          supabase gen types typescript \
+            --project-id "${{ secrets.SUPABASE_PROJECT_ID }}" \
+            --schema public > src/types/database.ts
+
+      - name: Open PR on changes
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore(db): regenerate Supabase types"
+          title: "chore(db): Supabase public schema types drift"
+          body: |
+            Automated run of `supabase gen types typescript` against `public`.
+
+            **Review**
+            - Confirm `src/types/database.ts` matches intended RLS/schema exposure.
+            - If new tables or RPCs appear, update `src/types/app-database.ts` only when the hosted project lags migrations (merge layer for the typed client).
+
+            **Required secrets**
+            - `SUPABASE_ACCESS_TOKEN` — personal access token with project access ([dashboard](https://supabase.com/dashboard/account/tokens)).
+            - `SUPABASE_PROJECT_ID` — project ref (same value as `hvotzqhnxhtlvpknuzxl` in `npm run db:types` if this is the canonical project).
+          branch: chore/supabase-types-weekly
+          delete-branch: true

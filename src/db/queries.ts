@@ -1,5 +1,7 @@
 import { supabase } from "@/lib/supabase";
-import type { DbSession, DbCard } from "@/lib/supabase";
+import type { DbSession, DbCard, Tables } from "@/lib/supabase";
+import type { Json } from "@/types/database";
+import type { AppTablesUpdate } from "@/types/app-database";
 import type { SessionROI, ScannedCard } from "@mtgtypes/index";
 
 // ─── Sessions ────────────────────────────────────────────────────────────────
@@ -106,6 +108,11 @@ export async function addCard(data: {
   imageUri: string | null;
   scryfallUri: string | null;
   destination?: "LGS" | "BULK";
+  scanConfidence?: number | null;
+  scanOcrEngine?: string | null;
+  scanImageMatchRank?: number | null;
+  scanOcrUnverified?: boolean;
+  language?: string | null;
 }): Promise<DbCard> {
   const { data: result, error } = await supabase
     .from("cards")
@@ -127,6 +134,11 @@ export async function addCard(data: {
       image_uri: data.imageUri,
       scryfall_uri: data.scryfallUri,
       destination: data.destination,
+      scan_confidence: data.scanConfidence ?? null,
+      scan_ocr_engine: data.scanOcrEngine ?? null,
+      scan_image_match_rank: data.scanImageMatchRank ?? null,
+      scan_ocr_unverified: data.scanOcrUnverified ?? false,
+      language: data.language ?? "en",
     })
     .select()
     .single();
@@ -258,7 +270,7 @@ export async function deleteCard(id: string): Promise<void> {
 
 // ─── Wishlist ────────────────────────────────────────────────────────────────
 
-export async function getWishlistItems(): Promise<any[]> {
+export async function getWishlistItems(): Promise<Tables<"wishlist">[]> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Authenticated user required");
 
@@ -282,7 +294,7 @@ export async function addWishlistItem(data: {
   priceTarget?: number;
   isFoil?: boolean;
   condition?: string;
-}): Promise<any> {
+}): Promise<Tables<"wishlist">> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Authenticated user required");
 
@@ -308,32 +320,27 @@ export async function addWishlistItem(data: {
 }
 
 export async function removeWishlistItem(id: string): Promise<void> {
-  const { data, error } = await supabase
-    .from("wishlist")
-    .delete()
-    .eq("id", id);
+  const { error, count } = await supabase.from("wishlist").delete({ count: "exact" }).eq("id", id);
   if (error) throw error;
-  if (!data || data.length === 0) {
+  if (count === 0) {
     throw new Error("Wishlist item not found or permission denied");
   }
 }
 
 export async function updateWishlistItem(id: string, updates: {
-  priceTarget?: number;
+  priceTarget?: number | null;
   isFoil?: boolean;
   condition?: string;
 }): Promise<void> {
-  const { error } = await supabase
-    .from("wishlist")
-    .update({
-      ...updates,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", id);
+  const payload: AppTablesUpdate<"wishlist"> = { updated_at: new Date().toISOString() };
+  if (updates.priceTarget !== undefined) payload.price_target = updates.priceTarget;
+  if (updates.isFoil !== undefined) payload.is_foil = updates.isFoil;
+  if (updates.condition !== undefined) payload.condition = updates.condition;
+  const { error } = await supabase.from("wishlist").update(payload).eq("id", id);
   if (error) throw error;
 }
 
-export async function getWishlistItem(id: string): Promise<any> {
+export async function getWishlistItem(id: string): Promise<Tables<"wishlist"> | undefined> {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Authenticated user required");
 
@@ -402,6 +409,11 @@ export async function calculateSessionROI(sessionId: string): Promise<SessionROI
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 
+function colorsFromJson(colors: Json): string[] {
+  if (!Array.isArray(colors)) return [];
+  return colors.filter((c): c is string => typeof c === "string");
+}
+
 export function dbCardToScanned(card: DbCard): ScannedCard {
   return {
     id: card.id,
@@ -411,10 +423,10 @@ export function dbCardToScanned(card: DbCard): ScannedCard {
     setCode: card.set_code,
     setName: card.set_name,
     collectorNumber: card.collector_number,
-    rarity: card.rarity,
-    colors: Array.isArray(card.colors) ? card.colors : [],
+    rarity: card.rarity as ScannedCard["rarity"],
+    colors: colorsFromJson(card.colors),
     isFoil: card.is_foil,
-    condition: card.condition,
+    condition: card.condition as ScannedCard["condition"],
     quantity: card.quantity,
     priceUsd: card.price_usd,
     priceUsdFoil: card.price_usd_foil,
@@ -422,6 +434,7 @@ export function dbCardToScanned(card: DbCard): ScannedCard {
     imageUri: card.image_uri,
     scryfallUri: card.scryfall_uri,
     addedAt: new Date(card.added_at).getTime(),
-    destination: card.destination ?? null,
+    destination:
+      card.destination === "LGS" || card.destination === "BULK" ? card.destination : null,
   };
 }

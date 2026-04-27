@@ -1,9 +1,10 @@
 import { createClient } from "@supabase/supabase-js";
+import type { AppDatabase, AppTables } from "@/types/app-database";
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+export const supabase = createClient<AppDatabase>(supabaseUrl, supabaseAnonKey, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
@@ -19,7 +20,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
  * @param body - Payload to send with the invocation
  * @returns Object with { data, error } similar to supabase.functions.invoke
  */
-export const invokeFunction = async (functionName: string, body?: any) => {
+export const invokeFunction = async (functionName: string, body?: unknown) => {
   // Determine if we're in local development (running on Expo)
   const isLocal = __DEV__ && supabaseUrl.includes("localhost");
   const functionUrl = isLocal
@@ -66,42 +67,10 @@ export const invokeFunction = async (functionName: string, body?: any) => {
   }
 };
 
-// TypeScript types matching our Supabase schema
-export interface DbSession {
-  id: string;
-  user_id: string;
-  name: string;
-  set_code: string | null;
-  cost_paid: number;
-  created_at: string;
-  updated_at: string;
-}
+/** Row types: generated schema merged in `app-database.ts` (see `npm run db:types`). */
+export type DbSession = AppTables<"sessions">;
+export type DbCard = AppTables<"cards">;
+export type DbDeck = AppTables<"decks">;
 
-export interface DbCard {
-  id: string;
-  session_id: string;
-  scryfall_id: string;
-  name: string;
-  set_code: string;
-  set_name: string;
-  collector_number: string;
-  rarity: "common" | "uncommon" | "rare" | "mythic";
-  colors: string[];
-  is_foil: boolean;
-  condition: "NM" | "LP" | "MP" | "HP" | "DMG";
-  quantity: number;
-  price_usd: number | null;
-  price_usd_foil: number | null;
-  price_fetched_at: string | null;
-  image_uri: string | null;
-  scryfall_uri: string | null;
-  added_at: string;
-  destination?: "LGS" | "BULK" | null;
-  cmc?: number;
-  mana_cost?: string;
-  type_line?: string;
-  oracle_text?: string;
-  power?: string;
-  toughness?: string;
-  loyalty?: string;
-}
+export type { AppDatabase as Database, AppTables as Tables } from "@/types/app-database";
+export type { Database as GeneratedDatabase, Tables as GeneratedTables } from "@/types/database";

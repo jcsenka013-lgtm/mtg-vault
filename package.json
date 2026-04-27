@@ -9,7 +9,10 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "export": "expo export --platform web",
-    "type-check": "tsc --noEmit --skipLibCheck"
+    "type-check": "tsc --noEmit --skipLibCheck",
+    "db:types": "supabase gen types typescript --project-id hvotzqhnxhtlvpknuzxl --schema public > src/types/database.ts",
+    "test": "vitest run",
+    "lint": "eslint \"app/**/*.{ts,tsx}\" \"src/hooks/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@expo/metro-runtime": "~55.0.6",
@@ -20,20 +23,20 @@
     "babel-preset-expo": "^55.0.11",
     "canvaskit-wasm": "^0.41.1",
     "d3-force": "^3.0.0",
-    "drizzle-orm": "^0.45.1",
     "expo": "~55.0.7",
     "expo-av": "^16.0.8",
     "expo-camera": "^55.0.10",
     "expo-clipboard": "^55.0.9",
+    "expo-crypto": "~15.0.7",
     "expo-file-system": "^55.0.11",
     "expo-haptics": "^55.0.9",
     "expo-image-manipulator": "~55.0.11",
     "expo-image-picker": "^55.0.18",
     "expo-router": "~55.0.7",
     "expo-sharing": "~55.0.14",
-    "expo-sqlite": "^55.0.11",
     "expo-status-bar": "~55.0.4",
     "expo-vision-ocr": "file:modules/expo-vision-ocr",
+    "jpeg-js": "^0.4.4",
     "nativewind": "^4.2.3",
     "react": "19.2.0",
     "react-dom": "19.2.0",
@@ -47,14 +50,17 @@
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.2",
     "@expo/ngrok": "^4.1.3",
     "@types/d3-force": "^3.0.10",
     "@types/react": "~19.2.2",
     "@types/uuid": "^10.0.0",
     "babel-plugin-module-resolver": "^5.0.3",
-    "drizzle-kit": "^0.31.10",
+    "eslint": "^9.39.2",
     "tailwindcss": "^3.4.19",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "typescript-eslint": "^8.50.0",
+    "vitest": "^4.0.16"
   },
   "private": true
 }

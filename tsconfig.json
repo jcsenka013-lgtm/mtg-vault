@@ -30,11 +30,14 @@
   "include": [
     "**/*.ts",
     "**/*.tsx",
+    "__tests__/**/*.ts",
     ".expo/types/**/*.d.ts",
     "expo-env.d.ts",
     ".expo/types/**/*.ts"
   ],
   "exclude": [
-    "supabase"
+    "supabase",
+    "**/__tests__/**",
+    "vitest.config.ts"
   ]
 }

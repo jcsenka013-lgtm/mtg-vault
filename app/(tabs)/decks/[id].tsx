@@ -6,6 +6,8 @@ import {
 } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { supabase } from "@/lib/supabase";
+import type { DbDeck } from "@/lib/supabase";
+import { routes } from "@/navigation/routes";
 import { searchCardByName, autocompleteCardName } from "@api/scryfall";
 import type { ScryfallCard } from "@mtgtypes/index";
 
@@ -32,7 +34,7 @@ const RARITY_COLORS: Record<string, string> = {
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function DeckDetailScreen() {
   const { id: deckId } = useLocalSearchParams<{ id: string }>();
-  const [deck, setDeck] = useState<any>(null);
+  const [deck, setDeck] = useState<DbDeck | null>(null);
   const [deckCards, setDeckCards] = useState<DeckCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingName, setEditingName] = useState(false);
@@ -69,7 +71,7 @@ export default function DeckDetailScreen() {
         .order("name");
       if (cErr) throw cErr;
       setDeckCards((cardRows ?? []) as DeckCard[]);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("fetchDeck:", e);
     } finally {
       setLoading(false);
@@ -82,7 +84,7 @@ export default function DeckDetailScreen() {
   const saveName = async () => {
     if (!editName.trim()) return;
     await supabase.from("decks").update({ name: editName.trim() }).eq("id", deckId);
-    setDeck((prev: any) => ({ ...prev, name: editName.trim() }));
+    setDeck((prev) => (prev ? { ...prev, name: editName.trim() } : prev));
     setEditingName(false);
   };
 
@@ -110,7 +112,7 @@ export default function DeckDetailScreen() {
     if (!ok) return;
     await supabase.from("deck_cards").delete().eq("deck_id", deckId);
     await supabase.from("decks").delete().eq("id", deckId);
-    router.replace("/decks" as any);
+    router.replace(routes.tabsDecks());
   };
 
   // ── Card Search ─────────────────────────────────────────────────────────────
@@ -235,7 +237,7 @@ export default function DeckDetailScreen() {
             </Pressable>
           )}
           <Text style={S.deckMeta}>
-            {deck.format ?? "Draft"}  ·  {totalCards} cards  ·  {new Date(deck.created_at).toLocaleDateString()}
+            {deck.format ?? "Draft"}  ·  {totalCards} cards  ·  {deck.created_at ? new Date(deck.created_at).toLocaleDateString() : "—"}
           </Text>
         </View>
       </ImageBackground>

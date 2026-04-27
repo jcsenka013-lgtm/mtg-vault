@@ -13,11 +13,13 @@ import {
   Platform,
 } from "react-native";
 import { router, useFocusEffect } from "expo-router";
+import { routes } from "@/navigation/routes";
 import { useAppStore } from "@store/appStore";
 import { getCardsForSession, deleteCard } from "@db/queries";
 import { supabase } from "@/lib/supabase";
 import type { DbCard } from "@/lib/supabase";
 import { type ManaTheme } from "@/theme";
+import { BackToCollectionBar } from "@components/BackToCollectionBar";
 
 const MANA_ORBS: { icon: string; theme: ManaTheme; bg: string }[] = [
   { icon: "☀️", theme: "W", bg: "#d4c060" },
@@ -128,7 +130,7 @@ export default function InventoryScreen() {
     const price = item.is_foil ? (item.price_usd_foil ?? item.price_usd) : item.price_usd;
     return (
       <View style={styles.cardRowWrapper}>
-        <Pressable style={styles.cardRow} onPress={() => router.push(`/card/${item.id}`)}>
+        <Pressable style={styles.cardRow} onPress={() => router.push(routes.cardDetail(item.id))}>
           {item.image_uri ? (
             <Image source={{ uri: item.image_uri }} style={styles.thumb} resizeMode="cover" />
           ) : (
@@ -200,18 +202,23 @@ export default function InventoryScreen() {
       let errorMessage = "Failed to list bundle to eBay.";
 
       if (typeof error === "object" && error !== null) {
-        // Check for nested errors (common in eBay API)
-        if ("data" in error) {
-          const data = (error as any).data;
-          if (data && data.errors) {
-            if (Array.isArray(data.errors)) {
-              errorMessage = data.errors[0]?.message || errorMessage;
-            } else if (data.errors && "message" in data.errors) {
-              errorMessage = data.errors.message;
+        const errObj = error as Record<string, unknown>;
+        if ("data" in errObj) {
+          const data = errObj.data;
+          if (data && typeof data === "object" && data !== null) {
+            const d = data as { errors?: unknown };
+            if (d.errors) {
+              if (Array.isArray(d.errors)) {
+                const first = d.errors[0] as { message?: string } | undefined;
+                errorMessage = first?.message ?? errorMessage;
+              } else if (typeof d.errors === "object" && d.errors !== null && "message" in d.errors) {
+                const nested = d.errors as { message?: unknown };
+                errorMessage = typeof nested.message === "string" ? nested.message : errorMessage;
+              }
             }
           }
-        } else if ("message" in error) {
-          errorMessage = (error as Error).message;
+        } else if ("message" in errObj && typeof errObj.message === "string") {
+          errorMessage = errObj.message;
         }
       }
       setListingError(errorMessage);
@@ -222,6 +229,7 @@ export default function InventoryScreen() {
 
   return (
     <View style={styles.container}>
+      <BackToCollectionBar />
       {/* Combined Hero Banner */}
       <ImageBackground
         source={require("../../assets/bg-mana-symbols.jpg")}
@@ -271,7 +279,7 @@ export default function InventoryScreen() {
             onSubmitEditing={loadCards}
           />
         </View>
-        <Pressable style={styles.manualBtn} onPress={() => router.push("/manual-entry" as any)}>
+        <Pressable style={styles.manualBtn} onPress={() => router.push(routes.manualEntry())}>
           <Text style={styles.manualBtnText}>✏️</Text>
         </Pressable>
       </View>
@@ -358,7 +366,7 @@ export default function InventoryScreen() {
         >
           <Text style={styles.emptyEmoji}>🏰</Text>
           <Text style={styles.emptyText}>No active opening</Text>
-          <Pressable style={styles.ctaBtn} onPress={() => router.push("/session/new")}>
+          <Pressable style={styles.ctaBtn} onPress={() => router.push(routes.sessionNew())}>
             <Text style={styles.ctaBtnText}>Begin an Opening</Text>
           </Pressable>
         </ImageBackground>
@@ -373,7 +381,7 @@ export default function InventoryScreen() {
         >
           <Text style={styles.emptyEmoji}>🔮</Text>
           <Text style={styles.emptyText}>No cards cataloged yet</Text>
-          <Pressable style={styles.ctaBtn} onPress={() => router.replace("/(tabs)/scanner")}>
+          <Pressable style={styles.ctaBtn} onPress={() => router.replace(routes.tabsScanner())}>
             <Text style={styles.ctaBtnText}>Start Scrying</Text>
           </Pressable>
         </ImageBackground>

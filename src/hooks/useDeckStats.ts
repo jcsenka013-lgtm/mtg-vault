@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import type { DbCard } from "@/lib/supabase";
 
-export function useDeckStats(deckList: Map<string, { card: any; quantity: number; zone: string }>) {
+export function useDeckStats(deckList: Map<string, { card: DbCard; quantity: number; zone: string }>) {
     const [curve, setCurve] = useState<number[]>([0, 0, 0, 0, 0, 0, 0, 0]);
     const [colors, setColors] = useState<{ [key: string]: number }>({ W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 });
     const [creatureCount, setCreatureCount] = useState(0);
@@ -23,9 +24,11 @@ export function useDeckStats(deckList: Map<string, { card: any; quantity: number
             }
 
             // Count colors
-            if (card.colors) {
-                card.colors.forEach(color => {
-                    newColors[color] = (newColors[color] || 0) + item.quantity;
+            const colors = Array.isArray(card.colors) ? card.colors.filter((c): c is string => typeof c === "string") : [];
+            if (colors.length > 0) {
+                colors.forEach((color) => {
+                    const key = color as keyof typeof newColors;
+                    newColors[key] = (newColors[key] ?? 0) + item.quantity;
                 });
             } else {
                 newColors.C += item.quantity;

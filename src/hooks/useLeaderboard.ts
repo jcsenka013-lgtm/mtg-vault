@@ -1,5 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
+import type { Tables, TablesInsert } from "@/types/database";
+
+type SeasonParticipantWithPlayer = Tables<"season_participants"> & {
+  players: { name: string } | null;
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,20 +84,23 @@ export function useLeaderboard(): UseLeaderboardResult {
       if (pErr) throw pErr;
 
       setParticipants(
-        (parts ?? []).map((p: any) => ({
-          participant_id: p.id,
-          player_id: p.player_id,
-          player_name: p.players.name as string,
-          deck_colors: (p.deck_colors ?? []) as string[],
-        }))
+        (parts ?? []).map((p) => {
+          const row = p as SeasonParticipantWithPlayer;
+          return {
+            participant_id: row.id,
+            player_id: row.player_id,
+            player_name: row.players?.name ?? "Unknown",
+            deck_colors: row.deck_colors ?? [],
+          };
+        })
       );
 
       // 4. Fetch lifetime leaderboard
       const { data: life, error: lifeErr } = await supabase.rpc("get_lifetime_leaderboard");
       if (lifeErr) throw lifeErr;
       setLifetimeLeaderboard((life ?? []) as LifetimeEntry[]);
-    } catch (err: any) {
-      setError(err.message ?? "Failed to load leaderboard.");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to load leaderboard.");
     } finally {
       setLoading(false);
     }
@@ -119,7 +127,7 @@ export function useLeaderboard(): UseLeaderboardResult {
       if (playersErr) throw playersErr;
 
       if (allPlayers && allPlayers.length > 0) {
-        const pData = allPlayers.map((p: any) => ({
+        const pData: TablesInsert<"season_participants">[] = allPlayers.map((p) => ({
           season_id: newSeason.id,
           player_id: p.id,
         }));
@@ -130,8 +138,8 @@ export function useLeaderboard(): UseLeaderboardResult {
       }
 
       await refresh();
-    } catch (err: any) {
-      throw new Error(err.message ?? "Failed to start new season.");
+    } catch (err: unknown) {
+      throw new Error(err instanceof Error ? err.message : "Failed to start new season.");
     }
   }, [refresh]);
 

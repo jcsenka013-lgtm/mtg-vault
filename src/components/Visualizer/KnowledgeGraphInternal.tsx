@@ -65,7 +65,9 @@ export default function KnowledgeGraphInternal() {
     // Run a few ticks immediately to prevent (0,0) flicker
     for (let i = 0; i < 20; i++) simulation.tick();
 
-    return () => simulation.stop();
+    return () => {
+      simulation.stop();
+    };
   }, [data]);
 
   if (!data) {
